@@ -153,6 +153,12 @@ div[data-testid="stDownloadButton"] button:hover {
     box-shadow: 0 8px 25px rgba(0,200,83,0.3) !important;
     transform: translateY(-2px) !important;
 }
+div[data-testid="stVideo"] {
+    max-width: 320px !important;
+    margin: 0 auto !important;
+    border-radius: 12px !important;
+    overflow: hidden !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
