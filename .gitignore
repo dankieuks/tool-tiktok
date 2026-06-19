@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+downloaded_videos/
+*.mp4
+temp_music.mp3
+.env
