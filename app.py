@@ -6,6 +6,7 @@ import streamlit as st
 from yt_dlp import YoutubeDL
 from moviepy.editor import VideoFileClip, concatenate_videoclips, AudioFileClip
 from moviepy.audio.fx.all import audio_loop
+import time
 
 # ==========================================
 # CẤU HÌNH
@@ -153,11 +154,13 @@ div[data-testid="stDownloadButton"] button:hover {
     box-shadow: 0 8px 25px rgba(0,200,83,0.3) !important;
     transform: translateY(-2px) !important;
 }
-div[data-testid="stVideo"] {
-    max-width: 320px !important;
+div[data-testid="stVideo"], video {
+    max-width: 150px !important;
+    max-height: 300px !important;
     margin: 0 auto !important;
     border-radius: 12px !important;
     overflow: hidden !important;
+    display: block !important;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -260,6 +263,7 @@ with col_right:
     progress_bar = st.progress(0)
     video_preview = st.empty()
     download_area = st.empty()
+    log_area = st.empty()
 
     if not start_btn:
         status_area.markdown("""
@@ -273,6 +277,7 @@ with col_right:
 # XỬ LÝ CHÍNH
 # ==========================================
 if start_btn:
+    error_logs = []
     if not valid_urls:
         status_area.error("⚠️ Vui lòng nhập ít nhất 1 link TikTok hợp lệ.")
     elif not keep_audio and music_file is None and mix_mode == "🎲 Trộn ngẫu nhiên theo nhạc":
@@ -318,18 +323,33 @@ if start_btn:
                 for i, url in enumerate(valid_urls):
                     pct = 5 + int((i / len(valid_urls)) * 40)
                     progress_bar.progress(pct)
-                    status_area.markdown(f"""
-                    <div class="status-box">
-                        <b>⬇️ [Bước 1/3] Đang tải video {i+1}/{len(valid_urls)}...</b><br>
-                        <span class="url">{url}</span>
-                    </div>
-                    """, unsafe_allow_html=True)
-                    try:
-                        ydl.download([url])
-                        success_count += 1
-                    except Exception as e:
+                    
+                    download_success = False
+                    last_error = ""
+                    try_count = 3  # 1 lần đầu + 2 lần retry
+                    
+                    for attempt in range(1, try_count + 1):
+                        attempt_str = f" (Thử lại lần {attempt-1})" if attempt > 1 else ""
+                        status_area.markdown(f"""
+                        <div class="status-box">
+                            <b>⬇️ [Bước 1/3] Đang tải video {i+1}/{len(valid_urls)}{attempt_str}...</b><br>
+                            <span class="url">{url}</span>
+                        </div>
+                        """, unsafe_allow_html=True)
+                        try:
+                            ydl.download([url])
+                            download_success = True
+                            success_count += 1
+                            break
+                        except Exception as e:
+                            last_error = str(e)
+                            if attempt < try_count:
+                                time.sleep(1.5)
+                                
+                    if not download_success:
                         fail_count += 1
-                        st.toast(f"⚠️ Lỗi tải video {i+1}: {str(e)[:80]}")
+                        error_logs.append(f"❌ Video {i+1} ({url}): {last_error}")
+                        st.toast(f"⚠️ Lỗi tải video {i+1} (Thử {try_count} lần đều thất bại)")
 
             downloaded_files = sorted(glob.glob(os.path.join(DOWNLOAD_DIR, "*.mp4")))
 
@@ -373,7 +393,9 @@ if start_btn:
 
                         clips.append(clip_mod)
                     except Exception as e:
-                        st.toast(f"⚠️ Bỏ qua file lỗi: {os.path.basename(path)} ({str(e)})")
+                        err_msg = f"⚠️ Bỏ qua file lỗi {os.path.basename(path)}: {str(e)}"
+                        error_logs.append(err_msg)
+                        st.toast(err_msg[:80])
 
                 if not clips:
                     status_area.error("❌ Không mở được video nào để ghép.")
@@ -481,3 +503,10 @@ if start_btn:
         except Exception as e:
             status_area.error(f"❌ Lỗi: {e}")
             progress_bar.progress(0)
+            error_logs.append(f"❌ Lỗi hệ thống: {str(e)}")
+        finally:
+            if 'error_logs' in locals() and error_logs:
+                with log_area.container():
+                    st.markdown("---")
+                    st.markdown("### ⚠️ Nhật ký lỗi (Logs)")
+                    st.code("\n".join(error_logs), language="text")
