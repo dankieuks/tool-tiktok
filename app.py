@@ -367,7 +367,7 @@ if start_btn:
 
                         clips.append(clip_mod)
                     except Exception as e:
-                        st.toast(f"⚠️ Bỏ qua file lỗi: {os.path.basename(path)}")
+                        st.toast(f"⚠️ Bỏ qua file lỗi: {os.path.basename(path)} ({str(e)})")
 
                 if not clips:
                     status_area.error("❌ Không mở được video nào để ghép.")
