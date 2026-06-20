@@ -10,14 +10,40 @@ import time
 from proglog import ProgressBarLogger
 
 # ==========================================
+# LIVE LOG PANEL - HIỂN THỊ LOG TRỰC TIẾP
+# ==========================================
+class LiveLog:
+    """Quản lý bảng log trực tiếp trên giao diện Streamlit."""
+    def __init__(self, log_container, max_lines=200):
+        self.log_container = log_container
+        self.lines = []
+        self.max_lines = max_lines
+    
+    def add(self, msg):
+        timestamp = time.strftime("%H:%M:%S")
+        self.lines.append(f"[{timestamp}] {msg}")
+        if len(self.lines) > self.max_lines:
+            self.lines = self.lines[-self.max_lines:]
+        self._render()
+    
+    def _render(self):
+        log_text = "\n".join(self.lines)
+        self.log_container.markdown(f"""
+<div style="background:#0a0e17; border:1px solid rgba(255,255,255,0.08); border-radius:10px; padding:12px 16px; max-height:300px; overflow-y:auto; font-family:'JetBrains Mono',monospace; font-size:0.78rem; color:#94a3b8; line-height:1.6;">
+<pre style="margin:0; white-space:pre-wrap; word-break:break-all;">{log_text}</pre>
+</div>
+""", unsafe_allow_html=True)
+
+# ==========================================
 # CUSTOM LOGGER DÀNH CHO MOVIEPY ĐỂ HIỂN THỊ %
 # ==========================================
 class StreamlitLogger(ProgressBarLogger):
-    def __init__(self, progress_bar, status_area, status_prefix=""):
+    def __init__(self, progress_bar, status_area, status_prefix="", live_log=None):
         super().__init__()
         self.progress_bar = progress_bar
         self.status_area = status_area
         self.status_prefix = status_prefix
+        self.live_log = live_log
         self.last_percent = -1
 
     def bars_callback(self, bar, attr, value, old_value=None):
@@ -30,7 +56,6 @@ class StreamlitLogger(ProgressBarLogger):
             
             if percent_int != self.last_percent:
                 self.last_percent = percent_int
-                # Ở Bước 3: Đang render video, thanh tiến trình của chúng ta bắt đầu từ 70% đến 100%
                 st_pct = 0.70 + (percent * 0.30)
                 self.progress_bar.progress(min(1.0, st_pct))
                 
@@ -40,6 +65,9 @@ class StreamlitLogger(ProgressBarLogger):
                     Đang ghi các khung hình vào file mp4...
                 </div>
                 """, unsafe_allow_html=True)
+                
+                if self.live_log and percent_int % 10 == 0:
+                    self.live_log.add(f"🎞️ Render tiến trình: {percent_int}%")
 
 
 # ==========================================
@@ -397,6 +425,15 @@ with col_right:
     progress_bar = st.progress(0)
     video_preview = st.empty()
     download_area = st.empty()
+    
+    # Bảng log trực tiếp
+    st.markdown("")
+    st.markdown("""
+    <div class="card">
+        <h3>📋 Nhật ký xử lý (Live Log)</h3>
+    </div>
+    """, unsafe_allow_html=True)
+    live_log_area = st.empty()
     log_area = st.empty()
 
     if not start_btn:
@@ -412,17 +449,21 @@ with col_right:
 # ==========================================
 if start_btn:
     error_logs = []
+    live_log = LiveLog(live_log_area)
     if not valid_urls:
         status_area.error("⚠️ Vui lòng nhập ít nhất 1 link TikTok hợp lệ.")
     elif not keep_audio and music_file is None and mix_mode == "🎲 Trộn ngẫu nhiên theo nhạc":
         status_area.error("⚠️ Bạn chọn chế độ trộn theo nhạc nhưng chưa tải lên file nhạc nền.")
     else:
         try:
+            live_log.add("🚀 Bắt đầu xử lý...")
+            
             # Dọn dẹp thư mục tạm cũ
             for f in glob.glob(os.path.join(DOWNLOAD_DIR, "*")):
                 os.remove(f)
             if os.path.exists(OUTPUT_FILE):
                 os.remove(OUTPUT_FILE)
+            live_log.add("🧹 Đã dọn dẹp thư mục tạm cũ.")
 
             # Lưu nhạc nền tạm nếu có upload
             music_path = None
@@ -430,8 +471,10 @@ if start_btn:
                 music_path = os.path.join(OUTPUT_DIR, "temp_music.mp3")
                 with open(music_path, "wb") as f:
                     f.write(music_file.getbuffer())
+                live_log.add(f"🎵 Đã lưu file nhạc nền tạm: {music_file.name}")
 
             # ========== BƯỚC 1: TẢI VIDEO ==========
+            live_log.add(f"⬇️ [BƯỚC 1/3] Bắt đầu tải {len(valid_urls)} video từ TikTok...")
             status_area.markdown(f"""
             <div class="status-box">
                 <b>⬇️ [Bước 1/3] Đang tải {len(valid_urls)} video từ TikTok...</b>
@@ -473,33 +516,41 @@ if start_btn:
                         try:
                             # Kiem tra neu la link kenh (chua @ va khong co /video/)
                             if "@" in url and "/video/" not in url:
+                                live_log.add(f"📺 Phát hiện link kênh: {url} → Tải {num_channel_videos} bài mới nhất")
                                 channel_opts = ydl_opts.copy()
                                 channel_opts['playlist_items'] = f'1-{num_channel_videos}'
                                 with YoutubeDL(channel_opts) as ydl_channel:
                                     ydl_channel.download([url])
                             else:
+                                live_log.add(f"⬇️ Đang tải video {i+1}/{len(valid_urls)}: {url[:60]}...")
                                 ydl.download([url])
                             download_success = True
                             success_count += 1
+                            live_log.add(f"✅ Tải thành công video {i+1}/{len(valid_urls)}")
                             break
                         except Exception as e:
                             last_error = str(e)
+                            live_log.add(f"⚠️ Lỗi tải video {i+1} (lần {attempt}/{try_count}): {str(e)[:80]}")
                             if attempt < try_count:
                                 time.sleep(1.5)
                                 
                     if not download_success:
                         fail_count += 1
                         error_logs.append(f"❌ Video {i+1} ({url}): {last_error}")
+                        live_log.add(f"❌ Bỏ qua video {i+1} sau {try_count} lần thử thất bại.")
                         st.toast(f"⚠️ Lỗi tải video {i+1} (Thử {try_count} lần đều thất bại)")
 
             downloaded_files = sorted(glob.glob(os.path.join(DOWNLOAD_DIR, "*.mp4")))
+            live_log.add(f"📁 Tổng cộng {len(downloaded_files)} file mp4 trong thư mục tạm.")
 
             if not downloaded_files:
+                live_log.add("❌ THẤT BẠI: Không tải thành công video nào.")
                 status_area.error(f"❌ Không tải thành công video nào ({fail_count} lỗi). Kiểm tra lại link TikTok.")
                 progress_bar.progress(0)
                 st.stop()
 
             progress_bar.progress(45)
+            live_log.add(f"✅ Tải xong! {success_count} thành công, {fail_count} lỗi.")
             status_area.markdown(f"""
             <div class="status-box">
                 <b>✅ Tải xong! {success_count} thành công, {fail_count} lỗi.</b>
@@ -507,6 +558,7 @@ if start_btn:
             """, unsafe_allow_html=True)
 
             # ========== BƯỚC 2: XỬ LÝ & GHÉP VIDEO ==========
+            live_log.add("✂️ [BƯỚC 2/3] Bắt đầu xử lý hình ảnh & ghép video...")
             status_area.markdown("""
             <div class="status-box">
                 <b>✂️ [Bước 2/3] Đang xử lý hình ảnh & ghép video...</b>
@@ -517,14 +569,16 @@ if start_btn:
             video_clips_opened = []
 
             if mix_mode == "🔗 Ghép nối tiếp nguyên bản":
+                live_log.add("🔗 Chế độ: Ghép nối tiếp nguyên bản.")
                 clips = []
-                for path in downloaded_files:
+                for idx_p, path in enumerate(downloaded_files):
                     try:
                         clip = VideoFileClip(path)
                         video_clips_opened.append(clip)
+                        mirror = random.choice([True, False])
 
                         # Lật hình ngẫu nhiên 50% để chống quét bản quyền
-                        if random.choice([True, False]):
+                        if mirror:
                             clip_mod = clip.fx(lambda c: c.image_transform(lambda im: im[:, ::-1]))
                         else:
                             clip_mod = clip
@@ -533,24 +587,32 @@ if start_btn:
                             clip_mod = clip_mod.without_audio()
 
                         clips.append(clip_mod)
+                        live_log.add(f"  📂 Clip {idx_p+1}/{len(downloaded_files)}: {os.path.basename(path)} ({clip.duration:.1f}s){' 🪞 Mirror' if mirror else ''}")
                     except Exception as e:
                         err_msg = f"⚠️ Bỏ qua file lỗi {os.path.basename(path)}: {str(e)}"
                         error_logs.append(err_msg)
+                        live_log.add(f"  ⚠️ Lỗi mở file: {os.path.basename(path)}")
                         st.toast(err_msg[:80])
 
                 if not clips:
                     status_area.error("❌ Không mở được video nào để ghép.")
                     st.stop()
 
+                live_log.add(f"📊 Đã nạp thành công {len(clips)} clip.")
+
                 # Tính toán thời lượng transition thực tế để tránh crash
                 actual_trans_duration = 0.0
                 if transition_mode != "❌ Không có (None)" and transition_duration > 0:
                     min_clip_dur = min([c.duration for c in clips]) if clips else 0
                     actual_trans_duration = min(transition_duration, min_clip_dur / 2)
+                    live_log.add(f"🎬 Chuyển cảnh: {transition_mode} | Thời lượng thực tế: {actual_trans_duration:.2f}s (clip ngắn nhất: {min_clip_dur:.2f}s)")
                     st.toast(f"ℹ️ Thời lượng chuyển cảnh thực tế: {actual_trans_duration:.2f}s")
+                else:
+                    live_log.add("🎬 Không áp dụng chuyển cảnh.")
 
                 # Áp dụng chuyển cảnh
                 if transition_mode == "🌸 Hòa tan (Crossfade)" and actual_trans_duration > 0:
+                    live_log.add("🌸 Đang áp dụng hiệu ứng Crossfade...")
                     processed_clips = []
                     for i, clip in enumerate(clips):
                         if i == 0:
@@ -559,6 +621,7 @@ if start_btn:
                             processed_clips.append(clip.crossfadein(actual_trans_duration))
                     final_video = concatenate_videoclips(processed_clips, padding=-actual_trans_duration, method="compose")
                 elif transition_mode == "⚫ Mờ dần qua đen (Fade to Black)" and actual_trans_duration > 0:
+                    live_log.add("⚫ Đang áp dụng hiệu ứng Fade to Black...")
                     processed_clips = []
                     for clip in clips:
                         faded = clip.fadein(actual_trans_duration).fadeout(actual_trans_duration)
@@ -568,6 +631,7 @@ if start_btn:
                     final_video = concatenate_videoclips(clips, method="compose")
 
                 total_dur = final_video.duration
+                live_log.add(f"✅ Ghép xong! Tổng thời lượng: {total_dur:.1f}s")
 
                 # Ghép nhạc nền nếu tắt âm thanh gốc
                 if not keep_audio and music_path and os.path.exists(music_path):
@@ -580,12 +644,14 @@ if start_btn:
 
             else:
                 # Chế độ trộn ngẫu nhiên
+                live_log.add("🎲 Chế độ: Trộn ngẫu nhiên theo nhạc.")
                 if not music_path or not os.path.exists(music_path):
                     status_area.error("❌ Chế độ trộn ngẫu nhiên yêu cầu phải có file nhạc nền.")
                     st.stop()
 
                 mc = AudioFileClip(music_path)
                 total_dur = mc.duration
+                live_log.add(f"🎵 Nhạc nền: {total_dur:.1f}s")
 
                 loaded_videos = []
                 for path in downloaded_files:
@@ -594,6 +660,9 @@ if start_btn:
                         video_clips_opened.append(clip)
                         if clip.duration > segment_duration:
                             loaded_videos.append(clip)
+                            live_log.add(f"  📂 Nạp clip: {os.path.basename(path)} ({clip.duration:.1f}s)")
+                        else:
+                            live_log.add(f"  ⏭️ Bỏ qua clip quá ngắn: {os.path.basename(path)} ({clip.duration:.1f}s < {segment_duration}s)")
                     except:
                         pass
 
@@ -601,10 +670,13 @@ if start_btn:
                     status_area.error("❌ Không có video nào đủ dài để cắt phân đoạn.")
                     st.stop()
 
+                live_log.add(f"📊 Đã nạp {len(loaded_videos)} clip đủ điều kiện. Bắt đầu cắt phân đoạn {segment_duration}s...")
+
                 # Tính toán thời lượng transition thực tế để tránh crash
                 actual_trans_duration = 0.0
                 if transition_mode != "❌ Không có (None)" and transition_duration > 0:
                     actual_trans_duration = min(transition_duration, segment_duration / 2)
+                    live_log.add(f"🎬 Chuyển cảnh: {transition_mode} | Thời lượng thực tế: {actual_trans_duration:.2f}s")
                     st.toast(f"ℹ️ Thời lượng chuyển cảnh thực tế: {actual_trans_duration:.2f}s")
 
                 clips = []
@@ -622,7 +694,10 @@ if start_btn:
                     else:
                         current_dur += segment_duration
 
+                live_log.add(f"✂️ Đã cắt {len(clips)} phân đoạn. Đang ghép video...")
+
                 if transition_mode == "🌸 Hòa tan (Crossfade)" and actual_trans_duration > 0:
+                    live_log.add("🌸 Đang áp dụng hiệu ứng Crossfade...")
                     processed_clips = []
                     for i, clip in enumerate(clips):
                         if i == 0:
@@ -631,6 +706,7 @@ if start_btn:
                             processed_clips.append(clip.crossfadein(actual_trans_duration))
                     final_video = concatenate_videoclips(processed_clips, padding=-actual_trans_duration, method="compose")
                 elif transition_mode == "⚫ Mờ dần qua đen (Fade to Black)" and actual_trans_duration > 0:
+                    live_log.add("⚫ Đang áp dụng hiệu ứng Fade to Black...")
                     processed_clips = []
                     for clip in clips:
                         faded = clip.fadein(actual_trans_duration).fadeout(actual_trans_duration)
@@ -641,8 +717,11 @@ if start_btn:
 
                 final_video = final_video.set_duration(total_dur)
                 final_video = final_video.set_audio(mc)
+                live_log.add(f"✅ Ghép xong! Tổng thời lượng: {total_dur:.1f}s")
 
             # ========== BƯỚC 3: RENDER ==========
+            live_log.add(f"🎞️ [BƯỚC 3/3] Bắt đầu render video ({total_dur:.1f}s) → {OUTPUT_FILE}")
+            live_log.add(f"  ⚙️ Cấu hình: fps=24, codec=libx264, audio=aac, threads=4")
             status_area.markdown(f"""
             <div class="status-box">
                 <b>🎞️ [Bước 3/3] Đang render video ({total_dur:.1f}s). Vui lòng chờ...</b>
@@ -653,7 +732,8 @@ if start_btn:
             logger = StreamlitLogger(
                 progress_bar=progress_bar,
                 status_area=status_area,
-                status_prefix=f"[Bước 3/3] Đang render video ({total_dur:.1f}s)"
+                status_prefix=f"[Bước 3/3] Đang render video ({total_dur:.1f}s)",
+                live_log=live_log
             )
 
             final_video.write_videofile(
@@ -674,12 +754,15 @@ if start_btn:
                     pass
 
             progress_bar.progress(100)
+            live_log.add("🎞️ Render hoàn tất 100%.")
 
             # ========== HIỂN THỊ KẾT QUẢ ==========
+            file_size_mb = os.path.getsize(OUTPUT_FILE) / (1024 * 1024)
+            live_log.add(f"🎉 HOÀN THÀNH! {len(clips)} clip • {total_dur:.1f}s • {file_size_mb:.1f} MB")
             status_area.markdown(f"""
             <div class="status-box" style="border-left-color: #00c853;">
                 <b>🎉 Hoàn thành! Video đã sẵn sàng.</b><br>
-                📊 Đã ghép <b>{len(clips)}</b> clip • Tổng thời lượng: <b>{total_dur:.1f}s</b>
+                📊 Đã ghép <b>{len(clips)}</b> clip • Tổng thời lượng: <b>{total_dur:.1f}s</b> • Dung lượng: <b>{file_size_mb:.1f} MB</b>
             </div>
             """, unsafe_allow_html=True)
 
@@ -701,6 +784,8 @@ if start_btn:
             status_area.error(f"❌ Lỗi: {e}")
             progress_bar.progress(0)
             error_logs.append(f"❌ Lỗi hệ thống: {str(e)}")
+            if 'live_log' in locals():
+                live_log.add(f"💥 LỖI HỆ THỐNG: {str(e)}")
         finally:
             if 'error_logs' in locals() and error_logs:
                 with log_area.container():
