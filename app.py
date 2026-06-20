@@ -7,6 +7,40 @@ from yt_dlp import YoutubeDL
 from moviepy.editor import VideoFileClip, concatenate_videoclips, AudioFileClip
 from moviepy.audio.fx.all import audio_loop
 import time
+from proglog import ProgressBarLogger
+
+# ==========================================
+# CUSTOM LOGGER DÀNH CHO MOVIEPY ĐỂ HIỂN THỊ %
+# ==========================================
+class StreamlitLogger(ProgressBarLogger):
+    def __init__(self, progress_bar, status_area, status_prefix=""):
+        super().__init__()
+        self.progress_bar = progress_bar
+        self.status_area = status_area
+        self.status_prefix = status_prefix
+        self.last_percent = -1
+
+    def bars_callback(self, bar, attr, value, old_value=None):
+        if bar != 't':
+            return
+        total = self.bars[bar]['total']
+        if total:
+            percent = min(1.0, max(0.0, value / total))
+            percent_int = int(percent * 100)
+            
+            if percent_int != self.last_percent:
+                self.last_percent = percent_int
+                # Ở Bước 3: Đang render video, thanh tiến trình của chúng ta bắt đầu từ 70% đến 100%
+                st_pct = 0.70 + (percent * 0.30)
+                self.progress_bar.progress(min(1.0, st_pct))
+                
+                self.status_area.markdown(f"""
+                <div class="status-box">
+                    <b>🎞️ {self.status_prefix} ({percent_int}%)</b><br>
+                    Đang ghi các khung hình vào file mp4...
+                </div>
+                """, unsafe_allow_html=True)
+
 
 # ==========================================
 # CẤU HÌNH PWA & WEB ICON
@@ -616,13 +650,19 @@ if start_btn:
             """, unsafe_allow_html=True)
             progress_bar.progress(70)
 
+            logger = StreamlitLogger(
+                progress_bar=progress_bar,
+                status_area=status_area,
+                status_prefix=f"[Bước 3/3] Đang render video ({total_dur:.1f}s)"
+            )
+
             final_video.write_videofile(
                 OUTPUT_FILE,
                 fps=24,
                 codec="libx264",
                 audio_codec="aac",
                 threads=4,
-                logger=None
+                logger=logger
             )
 
             # Giải phóng bộ nhớ
