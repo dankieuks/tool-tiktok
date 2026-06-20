@@ -188,13 +188,28 @@ st.markdown("""
 .card {
     background: linear-gradient(145deg, #1e293b, #162032);
     border: 1px solid rgba(255,255,255,0.06);
-    border-radius: 16px;
-    padding: 24px;
+    border-radius: 12px;
+    padding: 16px 20px;
     margin-bottom: 16px;
-    box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+    box-shadow: 0 4px 15px rgba(0,0,0,0.2);
 }
 .card h3 {
     margin-top: 0;
+    margin-bottom: 8px;
+    font-size: 1.1rem;
+    color: #e2e8f0;
+}
+
+.section-header {
+    background: linear-gradient(145deg, #1e293b, #162032);
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 12px;
+    padding: 12px 20px;
+    margin-bottom: 16px;
+    box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+}
+.section-header h3 {
+    margin: 0;
     font-size: 1.1rem;
     color: #e2e8f0;
 }
@@ -306,7 +321,7 @@ col_left, col_right = st.columns([1, 1], gap="large")
 
 with col_left:
     st.markdown("""
-    <div class="card">
+    <div class="section-header">
         <h3>📋 Chọn nguồn đầu vào</h3>
     </div>
     """, unsafe_allow_html=True)
@@ -360,7 +375,7 @@ with col_left:
 
     # Cấu hình
     st.markdown("""
-    <div class="card">
+    <div class="section-header">
         <h3>⚙️ Cấu hình xử lý</h3>
     </div>
     """, unsafe_allow_html=True)
@@ -405,7 +420,7 @@ with col_left:
 
 with col_right:
     st.markdown("""
-    <div class="card">
+    <div class="section-header">
         <h3>🖥️ Trạng thái & Kết quả</h3>
     </div>
     """, unsafe_allow_html=True)
@@ -418,7 +433,7 @@ with col_right:
     # Bảng log trực tiếp
     st.markdown("")
     st.markdown("""
-    <div class="card">
+    <div class="section-header">
         <h3>📋 Nhật ký xử lý (Live Log)</h3>
     </div>
     """, unsafe_allow_html=True)
