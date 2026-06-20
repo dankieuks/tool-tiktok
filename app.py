@@ -9,6 +9,61 @@ from moviepy.audio.fx.all import audio_loop
 import time
 
 # ==========================================
+# CẤU HÌNH PWA & WEB ICON
+# ==========================================
+def patch_streamlit_pwa():
+    import shutil
+    try:
+        # 1. Tìm thư mục static của streamlit đang cài trong máy
+        st_dir = os.path.dirname(st.__file__)
+        static_dir = os.path.join(st_dir, "static")
+        
+        # 2. Copy icon ứng dụng sang thư mục static
+        project_dir = os.path.dirname(os.path.abspath(__file__))
+        src_icon = os.path.join(project_dir, "app_icon.png")
+        dest_icon = os.path.join(static_dir, "app_icon.png")
+        
+        if os.path.exists(src_icon):
+            shutil.copy(src_icon, dest_icon)
+            
+        # 3. Tạo file manifest.json cho Android
+        manifest_content = """{
+  "name": "TikTok Video Mixer",
+  "short_name": "TiktokMixer",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0e1117",
+  "theme_color": "#FF007F",
+  "icons": [
+    {
+      "src": "app_icon.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}"""
+        with open(os.path.join(static_dir, "manifest.json"), "w", encoding="utf-8") as f:
+            f.write(manifest_content)
+
+        # 4. Chèn meta tags vào index.html
+        index_path = os.path.join(static_dir, "index.html")
+        if os.path.exists(index_path):
+            with open(index_path, "r", encoding="utf-8") as f:
+                html = f.read()
+            
+            meta_tags = '\n  <link rel="apple-touch-icon" href="app_icon.png">\n  <meta name="apple-mobile-web-app-capable" content="yes">\n  <link rel="manifest" href="manifest.json">'
+            
+            if "manifest.json" not in html:
+                html = html.replace("<head>", f"<head>{meta_tags}")
+                with open(index_path, "w", encoding="utf-8") as f:
+                    f.write(html)
+    except Exception as e:
+        print(f"PWA patching ignored: {e}")
+
+# Thực hiện patch khi khởi chạy ứng dụng
+patch_streamlit_pwa()
+
+# ==========================================
 # CẤU HÌNH
 # ==========================================
 DOWNLOAD_DIR = tempfile.mkdtemp(prefix="tiktok_dl_")
@@ -18,9 +73,10 @@ OUTPUT_FILE = os.path.join(OUTPUT_DIR, "final_music_video.mp4")
 # ==========================================
 # GIAO DIỆN
 # ==========================================
+project_icon = "app_icon.png" if os.path.exists("app_icon.png") else "🎬"
 st.set_page_config(
     page_title="TikTok Video Mixer",
-    page_icon="🎬",
+    page_icon=project_icon,
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -188,23 +244,54 @@ col_left, col_right = st.columns([1, 1], gap="large")
 with col_left:
     st.markdown("""
     <div class="card">
-        <h3>📋 Nhập danh sách Link TikTok</h3>
+        <h3>📋 Chọn nguồn đầu vào</h3>
     </div>
     """, unsafe_allow_html=True)
 
-    urls_input = st.text_area(
-        "Dán link TikTok vào đây (mỗi link 1 dòng):",
-        placeholder="https://www.tiktok.com/@user1/video/111111\nhttps://www.tiktok.com/@user2/video/222222\nhttps://www.tiktok.com/@user3/video/333333",
-        height=200,
+    input_mode = st.radio(
+        "Hình thức đầu vào:",
+        ["🔗 Dán danh sách link video", "📺 Tải từ Kênh TikTok"],
+        horizontal=True,
         label_visibility="collapsed"
     )
 
-    # Đếm số link hợp lệ
-    valid_urls = [u.strip() for u in urls_input.split("\n") if u.strip() and not u.strip().startswith("#")]
-    if valid_urls:
-        st.caption(f"✅ Đã nhận **{len(valid_urls)}** link hợp lệ")
+    valid_urls = []
+    num_channel_videos = 10
+    
+    if input_mode == "🔗 Dán danh sách link video":
+        urls_input = st.text_area(
+            "Dán link TikTok vào đây (mỗi link 1 dòng):",
+            placeholder="https://www.tiktok.com/@user1/video/111111\nhttps://www.tiktok.com/@user2/video/222222\nhttps://www.tiktok.com/@user3/video/333333",
+            height=180,
+            label_visibility="collapsed"
+        )
+        raw_urls = [u.strip() for u in urls_input.split("\n") if u.strip() and not u.strip().startswith("#")]
+        for u in raw_urls:
+            if "?" in u:
+                u = u.split("?")[0]
+            valid_urls.append(u)
+            
+        if valid_urls:
+            st.caption(f"✅ Đã nhận **{len(valid_urls)}** link hợp lệ")
+        else:
+            st.caption("⏳ Chưa có link nào được nhập")
     else:
-        st.caption("⏳ Chưa có link nào được nhập")
+        channel_url = st.text_input(
+            "Nhập link kênh TikTok:",
+            placeholder="https://www.tiktok.com/@username"
+        )
+        num_channel_videos = st.slider(
+            "Số lượng video mới nhất cần tải từ kênh:",
+            min_value=1, max_value=20, value=10, step=1
+        )
+        cleaned_channel_url = channel_url.strip()
+        if cleaned_channel_url:
+            if "?" in cleaned_channel_url:
+                cleaned_channel_url = cleaned_channel_url.split("?")[0]
+            valid_urls = [cleaned_channel_url]
+            st.caption(f"✅ Đã nhận kênh: **{cleaned_channel_url}** (Sẽ lấy **{num_channel_videos}** bài mới nhất)")
+        else:
+            st.caption("⏳ Chưa nhập link kênh")
 
     st.markdown("")
 
@@ -235,6 +322,19 @@ with col_left:
             "Độ dài mỗi phân đoạn (giây):",
             min_value=1.0, max_value=10.0, value=3.0, step=0.5
         )
+
+    # Hiệu ứng chuyển cảnh
+    st.markdown("---")
+    st.caption("🎬 **Hiệu ứng chuyển cảnh (Transitions)**")
+    transition_mode = st.selectbox(
+        "Chọn hiệu ứng chuyển cảnh:",
+        ["❌ Không có (None)", "🌸 Hòa tan (Crossfade)", "⚫ Mờ dần qua đen (Fade to Black)"],
+        index=0
+    )
+    transition_duration = st.slider(
+        "Thời lượng chuyển cảnh (giây):",
+        min_value=0.1, max_value=2.0, value=0.5, step=0.1
+    )
 
     st.markdown("")
     start_btn = st.button("🚀 BẮT ĐẦU XỬ LÝ", use_container_width=True)
@@ -337,7 +437,14 @@ if start_btn:
                         </div>
                         """, unsafe_allow_html=True)
                         try:
-                            ydl.download([url])
+                            # Kiem tra neu la link kenh (chua @ va khong co /video/)
+                            if "@" in url and "/video/" not in url:
+                                channel_opts = ydl_opts.copy()
+                                channel_opts['playlist_items'] = f'1-{num_channel_videos}'
+                                with YoutubeDL(channel_opts) as ydl_channel:
+                                    ydl_channel.download([url])
+                            else:
+                                ydl.download([url])
                             download_success = True
                             success_count += 1
                             break
@@ -401,7 +508,31 @@ if start_btn:
                     status_area.error("❌ Không mở được video nào để ghép.")
                     st.stop()
 
-                final_video = concatenate_videoclips(clips, method="compose")
+                # Tính toán thời lượng transition thực tế để tránh crash
+                actual_trans_duration = 0.0
+                if transition_mode != "❌ Không có (None)" and transition_duration > 0:
+                    min_clip_dur = min([c.duration for c in clips]) if clips else 0
+                    actual_trans_duration = min(transition_duration, min_clip_dur / 2)
+                    st.toast(f"ℹ️ Thời lượng chuyển cảnh thực tế: {actual_trans_duration:.2f}s")
+
+                # Áp dụng chuyển cảnh
+                if transition_mode == "🌸 Hòa tan (Crossfade)" and actual_trans_duration > 0:
+                    processed_clips = []
+                    for i, clip in enumerate(clips):
+                        if i == 0:
+                            processed_clips.append(clip)
+                        else:
+                            processed_clips.append(clip.crossfadein(actual_trans_duration))
+                    final_video = concatenate_videoclips(processed_clips, padding=-actual_trans_duration, method="compose")
+                elif transition_mode == "⚫ Mờ dần qua đen (Fade to Black)" and actual_trans_duration > 0:
+                    processed_clips = []
+                    for clip in clips:
+                        faded = clip.fadein(actual_trans_duration).fadeout(actual_trans_duration)
+                        processed_clips.append(faded)
+                    final_video = concatenate_videoclips(processed_clips, method="compose")
+                else:
+                    final_video = concatenate_videoclips(clips, method="compose")
+
                 total_dur = final_video.duration
 
                 # Ghép nhạc nền nếu tắt âm thanh gốc
@@ -436,6 +567,12 @@ if start_btn:
                     status_area.error("❌ Không có video nào đủ dài để cắt phân đoạn.")
                     st.stop()
 
+                # Tính toán thời lượng transition thực tế để tránh crash
+                actual_trans_duration = 0.0
+                if transition_mode != "❌ Không có (None)" and transition_duration > 0:
+                    actual_trans_duration = min(transition_duration, segment_duration / 2)
+                    st.toast(f"ℹ️ Thời lượng chuyển cảnh thực tế: {actual_trans_duration:.2f}s")
+
                 clips = []
                 current_dur = 0.0
                 while current_dur < total_dur:
@@ -445,9 +582,29 @@ if start_btn:
                     if random.choice([True, False]):
                         sub = sub.fx(lambda c: c.image_transform(lambda im: im[:, ::-1]))
                     clips.append(sub)
-                    current_dur += segment_duration
+                    
+                    if transition_mode == "🌸 Hòa tan (Crossfade)" and len(clips) > 1:
+                        current_dur += (segment_duration - actual_trans_duration)
+                    else:
+                        current_dur += segment_duration
 
-                final_video = concatenate_videoclips(clips, method="compose")
+                if transition_mode == "🌸 Hòa tan (Crossfade)" and actual_trans_duration > 0:
+                    processed_clips = []
+                    for i, clip in enumerate(clips):
+                        if i == 0:
+                            processed_clips.append(clip)
+                        else:
+                            processed_clips.append(clip.crossfadein(actual_trans_duration))
+                    final_video = concatenate_videoclips(processed_clips, padding=-actual_trans_duration, method="compose")
+                elif transition_mode == "⚫ Mờ dần qua đen (Fade to Black)" and actual_trans_duration > 0:
+                    processed_clips = []
+                    for clip in clips:
+                        faded = clip.fadein(actual_trans_duration).fadeout(actual_trans_duration)
+                        processed_clips.append(faded)
+                    final_video = concatenate_videoclips(processed_clips, method="compose")
+                else:
+                    final_video = concatenate_videoclips(clips, method="compose")
+
                 final_video = final_video.set_duration(total_dur)
                 final_video = final_video.set_audio(mc)
 

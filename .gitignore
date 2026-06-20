@@ -3,4 +3,8 @@ __pycache__/
 downloaded_videos/
 *.mp4
 temp_music.mp3
+music.mp3
 .env
+venv/
+.venv/
+
