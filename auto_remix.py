@@ -21,11 +21,6 @@ BACKGROUND_MUSIC = "music.mp3"
 URLS_FILE = "urls.txt"
 SEGMENT_DURATION = 3.0          # Chỉ dùng khi chọn MIX_MODE = "random_segments"
 
-TRANSITION_MODE = "none"        # "none": Không chuyển cảnh
-                                # "crossfade": Hòa tan chéo
-                                # "fade": Mờ dần qua màu đen
-
-TRANSITION_DURATION = 0.5       # Thời lượng chuyển cảnh (giây), tự động giới hạn để tránh crash
 NUM_CHANNEL_VIDEOS = 10         # Số lượng video mới nhất cần tải từ mỗi link kênh TikTok
 # ==========================================
 
@@ -72,7 +67,6 @@ def download_tiktok_videos(urls_file):
     with YoutubeDL(ydl_opts) as ydl:
         for idx, url in enumerate(urls, 1):
             try:
-                # Kiem tra xem co phai link kenh (co @ va khong co /video/)
                 if "@" in url and "/video/" not in url:
                     print(f"\n[*] Dang tai {NUM_CHANNEL_VIDEOS} video moi nhat tu kenh {idx}/{len(urls)}: {url}")
                     channel_opts = ydl_opts.copy()
@@ -105,11 +99,10 @@ def mix_videos_sequential(video_paths, music_path, output_path, keep_audio):
     for path in video_paths:
         try:
             clip = VideoFileClip(path)
-            # Áp dụng các thay đổi nhẹ chống quét bản quyền nếu cần
-            # 1. Lật hình ngang
-            clip_modified = clip.fx(lambda c: c.image_transform(lambda im: im[:, ::-1]))
+            # Lật hình ngang chống quét bản quyền
+            clip_modified = clip.fl_image(lambda frame: frame[:, ::-1])
             
-            # 2. Xử lý âm thanh
+            # Xử lý âm thanh
             if not keep_audio:
                 clip_modified = clip_modified.without_audio()
                 
@@ -122,31 +115,9 @@ def mix_videos_sequential(video_paths, music_path, output_path, keep_audio):
         print("[!] Khong co video nao mo thanh cong.")
         return
 
-    # Giới hạn thời lượng chuyển cảnh để tránh crash (tối đa bằng 1/2 clip ngắn nhất)
-    actual_trans_duration = 0.0
-    if TRANSITION_MODE in ["crossfade", "fade"] and TRANSITION_DURATION > 0:
-        min_clip_dur = min([c.duration for c in clips]) if clips else 0
-        actual_trans_duration = min(TRANSITION_DURATION, min_clip_dur / 2)
-        print(f"[*] Thoi luong chuyen canh thuc te: {actual_trans_duration:.2f} giay (cấu hình: {TRANSITION_DURATION}s, clip ngan nhat: {min_clip_dur:.2f}s).")
-
     try:
         print("[*] Dang ghep lien mach cac video...")
-        if TRANSITION_MODE == "crossfade" and actual_trans_duration > 0:
-            processed_clips = []
-            for i, clip in enumerate(clips):
-                if i == 0:
-                    processed_clips.append(clip)
-                else:
-                    processed_clips.append(clip.crossfadein(actual_trans_duration))
-            final_video = concatenate_videoclips(processed_clips, padding=-actual_trans_duration, method="compose")
-        elif TRANSITION_MODE == "fade" and actual_trans_duration > 0:
-            processed_clips = []
-            for clip in clips:
-                faded = clip.fadein(actual_trans_duration).fadeout(actual_trans_duration)
-                processed_clips.append(faded)
-            final_video = concatenate_videoclips(processed_clips, method="compose")
-        else:
-            final_video = concatenate_videoclips(clips, method="compose")
+        final_video = concatenate_videoclips(clips, method="chain")
             
         total_duration = final_video.duration
         print(f"[*] Tong thoi luong video sau khi ghep: {total_duration:.2f} giay.")
@@ -157,24 +128,24 @@ def mix_videos_sequential(video_paths, music_path, output_path, keep_audio):
                 print(f"[*] Dang long nhac nen '{music_path}'...")
                 music_clip = AudioFileClip(music_path)
                 
-                # Nếu nhạc nền ngắn hơn tổng thời lượng video -> lặp lại nhạc
                 if music_clip.duration < total_duration:
                     print("[*] Nhac nen ngan hon video, tien hanh lap lai nhac cho khop...")
                     looped_music = audio_loop(music_clip, duration=total_duration)
                     final_video = final_video.set_audio(looped_music)
                 else:
-                    # Cắt nhạc nền cho bằng thời lượng video
                     final_video = final_video.set_audio(music_clip.set_duration(total_duration))
             else:
                 print(f"[!] Canh bao: Khong tim thay file nhac nen '{music_path}'. Video xuat ra se khong co am thanh.")
         
-        print(f"[*] Dang render video dau ra: {output_path}...")
+        render_threads = 2  # Giới hạn 2 threads cho server 2GB RAM
+        print(f"[*] Dang render video dau ra: {output_path} (threads={render_threads}, preset=ultrafast)...")
         final_video.write_videofile(
             output_path,
             fps=24,
             codec="libx264",
             audio_codec="aac" if not keep_audio or os.path.exists(music_path) else None,
-            threads=4
+            threads=render_threads,
+            preset='ultrafast'
         )
         print(f"[+] Render video hoan tat: {output_path}")
         final_video.close()
@@ -207,12 +178,6 @@ def mix_videos_random_segments(video_paths, music_path, output_path, segment_dur
         print(f"[!] Khong the tai nhac nen: {e}")
         return
 
-    # Giới hạn thời lượng chuyển cảnh để tránh crash (tối đa bằng 1/2 segment_duration)
-    actual_trans_duration = 0.0
-    if TRANSITION_MODE in ["crossfade", "fade"] and TRANSITION_DURATION > 0:
-        actual_trans_duration = min(TRANSITION_DURATION, segment_duration / 2)
-        print(f"[*] Thoi luong chuyen canh thuc te: {actual_trans_duration:.2f} giay (segment_duration: {segment_duration:.2f}s).")
-
     clips = []
     current_duration = 0.0
     video_clips_opened = []
@@ -244,44 +209,26 @@ def mix_videos_random_segments(video_paths, music_path, output_path, segment_dur
             
             # Lật ngang hình ảnh ngẫu nhiên 50%
             if random.choice([True, False]):
-                sub_clip = sub_clip.fx(lambda c: c.image_transform(lambda im: im[:, ::-1]))
+                sub_clip = sub_clip.fl_image(lambda frame: frame[:, ::-1])
             
             clips.append(sub_clip)
-            
-            # Tính toán thời lượng tích lũy chính xác dựa trên chế độ chuyển cảnh
-            if TRANSITION_MODE == "crossfade" and len(clips) > 1:
-                current_duration += (segment_duration - actual_trans_duration)
-            else:
-                current_duration += segment_duration
+            current_duration += segment_duration
 
         print(f"[*] Da cat ghep xong {len(clips)} phan doan. Dang ghep video lien mach...")
-        if TRANSITION_MODE == "crossfade" and actual_trans_duration > 0:
-            processed_clips = []
-            for i, clip in enumerate(clips):
-                if i == 0:
-                    processed_clips.append(clip)
-                else:
-                    processed_clips.append(clip.crossfadein(actual_trans_duration))
-            final_video = concatenate_videoclips(processed_clips, padding=-actual_trans_duration, method="compose")
-        elif TRANSITION_MODE == "fade" and actual_trans_duration > 0:
-            processed_clips = []
-            for clip in clips:
-                faded = clip.fadein(actual_trans_duration).fadeout(actual_trans_duration)
-                processed_clips.append(faded)
-            final_video = concatenate_videoclips(processed_clips, method="compose")
-        else:
-            final_video = concatenate_videoclips(clips, method="compose")
+        final_video = concatenate_videoclips(clips, method="chain")
             
         final_video = final_video.set_duration(total_duration)
         final_video = final_video.set_audio(music_clip)
         
-        print(f"[*] Dang render video dau ra: {output_path}...")
+        render_threads = 2  # Giới hạn 2 threads cho server 2GB RAM
+        print(f"[*] Dang render video dau ra: {output_path} (threads={render_threads}, preset=ultrafast)...")
         final_video.write_videofile(
             output_path,
             fps=24,
             codec="libx264",
             audio_codec="aac",
-            threads=4
+            threads=render_threads,
+            preset='ultrafast'
         )
         print(f"[+] Render video hoan tat: {output_path}")
         final_video.close()

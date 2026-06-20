@@ -2,6 +2,7 @@ import os
 import glob
 import random
 import tempfile
+import gc
 import streamlit as st
 from yt_dlp import YoutubeDL
 from moviepy.editor import VideoFileClip, concatenate_videoclips, AudioFileClip
@@ -385,18 +386,6 @@ with col_left:
             min_value=1.0, max_value=10.0, value=3.0, step=0.5
         )
 
-    # Hiệu ứng chuyển cảnh
-    st.markdown("---")
-    st.caption("🎬 **Hiệu ứng chuyển cảnh (Transitions)**")
-    transition_mode = st.selectbox(
-        "Chọn hiệu ứng chuyển cảnh:",
-        ["❌ Không có (None)", "🌸 Hòa tan (Crossfade)", "⚫ Mờ dần qua đen (Fade to Black)"],
-        index=0
-    )
-    transition_duration = st.slider(
-        "Thời lượng chuyển cảnh (giây):",
-        min_value=0.1, max_value=2.0, value=0.5, step=0.1
-    )
 
     st.markdown("")
     start_btn = st.button("🚀 BẮT ĐẦU XỬ LÝ", use_container_width=True)
@@ -450,345 +439,348 @@ with col_right:
 if start_btn:
     error_logs = []
     live_log = LiveLog(live_log_area)
+    BATCH_SIZE = 10
+    
     if not valid_urls:
         status_area.error("⚠️ Vui lòng nhập ít nhất 1 link TikTok hợp lệ.")
     elif not keep_audio and music_file is None and mix_mode == "🎲 Trộn ngẫu nhiên theo nhạc":
         status_area.error("⚠️ Bạn chọn chế độ trộn theo nhạc nhưng chưa tải lên file nhạc nền.")
     else:
-        try:
-            live_log.add("🚀 Bắt đầu xử lý...")
+        # Chia batch
+        batches = [valid_urls[i:i+BATCH_SIZE] for i in range(0, len(valid_urls), BATCH_SIZE)]
+        total_batches = len(batches)
+        completed_videos = []  # Lưu danh sách video đã hoàn thành
+        
+        live_log.add(f"🚀 Bắt đầu xử lý {len(valid_urls)} link → {total_batches} batch (tối đa {BATCH_SIZE} link/batch)")
+        
+        # Lưu nhạc nền tạm nếu có upload (chỉ lưu 1 lần)
+        music_path = None
+        if not keep_audio and music_file:
+            music_path = os.path.join(OUTPUT_DIR, "temp_music.mp3")
+            with open(music_path, "wb") as f:
+                f.write(music_file.getbuffer())
+            live_log.add(f"🎵 Đã lưu nhạc nền: {music_file.name}")
+        
+        for batch_idx, batch_urls in enumerate(batches):
+            batch_num = batch_idx + 1
+            batch_output = os.path.join(OUTPUT_DIR, f"batch_{batch_num}.mp4")
             
-            # Dọn dẹp thư mục tạm cũ
-            for f in glob.glob(os.path.join(DOWNLOAD_DIR, "*")):
-                os.remove(f)
-            if os.path.exists(OUTPUT_FILE):
-                os.remove(OUTPUT_FILE)
-            live_log.add("🧹 Đã dọn dẹp thư mục tạm cũ.")
-
-            # Lưu nhạc nền tạm nếu có upload
-            music_path = None
-            if not keep_audio and music_file:
-                music_path = os.path.join(OUTPUT_DIR, "temp_music.mp3")
-                with open(music_path, "wb") as f:
-                    f.write(music_file.getbuffer())
-                live_log.add(f"🎵 Đã lưu file nhạc nền tạm: {music_file.name}")
-
-            # ========== BƯỚC 1: TẢI VIDEO ==========
-            live_log.add(f"⬇️ [BƯỚC 1/3] Bắt đầu tải {len(valid_urls)} video từ TikTok...")
+            live_log.add(f"")
+            live_log.add(f"{'='*40}")
+            live_log.add(f"📦 BATCH {batch_num}/{total_batches} ({len(batch_urls)} link)")
+            live_log.add(f"{'='*40}")
+            
             status_area.markdown(f"""
             <div class="status-box">
-                <b>⬇️ [Bước 1/3] Đang tải {len(valid_urls)} video từ TikTok...</b>
+                <b>📦 Batch {batch_num}/{total_batches} — Đang xử lý {len(batch_urls)} link...</b>
             </div>
             """, unsafe_allow_html=True)
-            progress_bar.progress(5)
-
-            ydl_opts = {
-                'outtmpl': os.path.join(DOWNLOAD_DIR, '%(id)s.%(ext)s'),
-                'format': 'bestvideo+bestaudio/best',
-                'referer': 'https://www.tiktok.com/',
-                'merge_output_format': 'mp4',
-                'headers': {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-                },
-                'quiet': True,
-                'no_warnings': True,
-            }
-
-            success_count = 0
-            fail_count = 0
-            with YoutubeDL(ydl_opts) as ydl:
-                for i, url in enumerate(valid_urls):
-                    pct = 5 + int((i / len(valid_urls)) * 40)
-                    progress_bar.progress(pct)
-                    
-                    download_success = False
-                    last_error = ""
-                    try_count = 3  # 1 lần đầu + 2 lần retry
-                    
-                    for attempt in range(1, try_count + 1):
-                        attempt_str = f" (Thử lại lần {attempt-1})" if attempt > 1 else ""
-                        status_area.markdown(f"""
-                        <div class="status-box">
-                            <b>⬇️ [Bước 1/3] Đang tải video {i+1}/{len(valid_urls)}{attempt_str}...</b><br>
-                            <span class="url">{url}</span>
-                        </div>
-                        """, unsafe_allow_html=True)
+            
+            try:
+                # Dọn dẹp thư mục tạm
+                for f in glob.glob(os.path.join(DOWNLOAD_DIR, "*")):
+                    os.remove(f)
+                gc.collect()
+                
+                # ========== BƯỚC 1: TẢI VIDEO ==========
+                live_log.add(f"⬇️ [1/3] Tải {len(batch_urls)} video...")
+                batch_pct_base = int((batch_idx / total_batches) * 100)
+                batch_pct_range = int(100 / total_batches)
+                
+                ydl_opts = {
+                    'outtmpl': os.path.join(DOWNLOAD_DIR, '%(id)s.%(ext)s'),
+                    'format': 'bestvideo+bestaudio/best',
+                    'referer': 'https://www.tiktok.com/',
+                    'merge_output_format': 'mp4',
+                    'headers': {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                    },
+                    'quiet': True,
+                    'no_warnings': True,
+                }
+                
+                success_count = 0
+                fail_count = 0
+                with YoutubeDL(ydl_opts) as ydl:
+                    for i, url in enumerate(batch_urls):
+                        pct = batch_pct_base + int((i / len(batch_urls)) * batch_pct_range * 0.4)
+                        progress_bar.progress(min(99, pct))
+                        
+                        download_success = False
+                        last_error = ""
+                        
+                        for attempt in range(1, 4):
+                            attempt_str = f" (lần {attempt})" if attempt > 1 else ""
+                            status_area.markdown(f"""
+                            <div class="status-box">
+                                <b>📦 Batch {batch_num}/{total_batches} — ⬇️ Tải video {i+1}/{len(batch_urls)}{attempt_str}</b><br>
+                                <span class="url">{url[:60]}</span>
+                            </div>
+                            """, unsafe_allow_html=True)
+                            try:
+                                if "@" in url and "/video/" not in url:
+                                    live_log.add(f"📺 Kênh: {url} → {num_channel_videos} bài")
+                                    channel_opts = ydl_opts.copy()
+                                    channel_opts['playlist_items'] = f'1-{num_channel_videos}'
+                                    with YoutubeDL(channel_opts) as ydl_channel:
+                                        ydl_channel.download([url])
+                                else:
+                                    live_log.add(f"⬇️ Video {i+1}/{len(batch_urls)}: {url[:50]}...")
+                                    ydl.download([url])
+                                download_success = True
+                                success_count += 1
+                                live_log.add(f"✅ Xong video {i+1}/{len(batch_urls)}")
+                                break
+                            except Exception as e:
+                                last_error = str(e)
+                                live_log.add(f"⚠️ Lỗi (lần {attempt}): {str(e)[:60]}")
+                                if attempt < 3:
+                                    time.sleep(1.0)
+                        
+                        if not download_success:
+                            fail_count += 1
+                            error_logs.append(f"❌ Batch {batch_num} - Video {i+1} ({url}): {last_error}")
+                            live_log.add(f"❌ Bỏ qua video {i+1}.")
+                        
+                        gc.collect()
+                
+                downloaded_files = sorted(glob.glob(os.path.join(DOWNLOAD_DIR, "*.mp4")))
+                live_log.add(f"📁 Tải xong: {success_count} OK, {fail_count} lỗi → {len(downloaded_files)} file")
+                
+                if not downloaded_files:
+                    live_log.add(f"⚠️ Batch {batch_num}: Không có video nào, bỏ qua.")
+                    continue
+                
+                # ========== BƯỚC 2: XỬ LÝ & GHÉP VIDEO ==========
+                pct = batch_pct_base + int(batch_pct_range * 0.45)
+                progress_bar.progress(min(99, pct))
+                live_log.add(f"✂️ [2/3] Ghép video...")
+                
+                status_area.markdown(f"""
+                <div class="status-box">
+                    <b>📦 Batch {batch_num}/{total_batches} — ✂️ Đang ghép video...</b>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                video_clips_opened = []
+                
+                if mix_mode == "🔗 Ghép nối tiếp nguyên bản":
+                    clips = []
+                    for idx_p, path in enumerate(downloaded_files):
                         try:
-                            # Kiem tra neu la link kenh (chua @ va khong co /video/)
-                            if "@" in url and "/video/" not in url:
-                                live_log.add(f"📺 Phát hiện link kênh: {url} → Tải {num_channel_videos} bài mới nhất")
-                                channel_opts = ydl_opts.copy()
-                                channel_opts['playlist_items'] = f'1-{num_channel_videos}'
-                                with YoutubeDL(channel_opts) as ydl_channel:
-                                    ydl_channel.download([url])
+                            clip = VideoFileClip(path)
+                            video_clips_opened.append(clip)
+                            mirror = random.choice([True, False])
+                            
+                            if mirror:
+                                clip_mod = clip.fl_image(lambda frame: frame[:, ::-1])
                             else:
-                                live_log.add(f"⬇️ Đang tải video {i+1}/{len(valid_urls)}: {url[:60]}...")
-                                ydl.download([url])
-                            download_success = True
-                            success_count += 1
-                            live_log.add(f"✅ Tải thành công video {i+1}/{len(valid_urls)}")
-                            break
+                                clip_mod = clip
+                            
+                            if not keep_audio:
+                                clip_mod = clip_mod.without_audio()
+                            
+                            clips.append(clip_mod)
+                            live_log.add(f"  📂 {os.path.basename(path)} ({clip.duration:.1f}s){' 🪞' if mirror else ''}")
                         except Exception as e:
-                            last_error = str(e)
-                            live_log.add(f"⚠️ Lỗi tải video {i+1} (lần {attempt}/{try_count}): {str(e)[:80]}")
-                            if attempt < try_count:
-                                time.sleep(1.5)
-                                
-                    if not download_success:
-                        fail_count += 1
-                        error_logs.append(f"❌ Video {i+1} ({url}): {last_error}")
-                        live_log.add(f"❌ Bỏ qua video {i+1} sau {try_count} lần thử thất bại.")
-                        st.toast(f"⚠️ Lỗi tải video {i+1} (Thử {try_count} lần đều thất bại)")
-
-            downloaded_files = sorted(glob.glob(os.path.join(DOWNLOAD_DIR, "*.mp4")))
-            live_log.add(f"📁 Tổng cộng {len(downloaded_files)} file mp4 trong thư mục tạm.")
-
-            if not downloaded_files:
-                live_log.add("❌ THẤT BẠI: Không tải thành công video nào.")
-                status_area.error(f"❌ Không tải thành công video nào ({fail_count} lỗi). Kiểm tra lại link TikTok.")
-                progress_bar.progress(0)
-                st.stop()
-
-            progress_bar.progress(45)
-            live_log.add(f"✅ Tải xong! {success_count} thành công, {fail_count} lỗi.")
-            status_area.markdown(f"""
-            <div class="status-box">
-                <b>✅ Tải xong! {success_count} thành công, {fail_count} lỗi.</b>
-            </div>
-            """, unsafe_allow_html=True)
-
-            # ========== BƯỚC 2: XỬ LÝ & GHÉP VIDEO ==========
-            live_log.add("✂️ [BƯỚC 2/3] Bắt đầu xử lý hình ảnh & ghép video...")
-            status_area.markdown("""
-            <div class="status-box">
-                <b>✂️ [Bước 2/3] Đang xử lý hình ảnh & ghép video...</b>
-            </div>
-            """, unsafe_allow_html=True)
-            progress_bar.progress(50)
-
-            video_clips_opened = []
-
-            if mix_mode == "🔗 Ghép nối tiếp nguyên bản":
-                live_log.add("🔗 Chế độ: Ghép nối tiếp nguyên bản.")
-                clips = []
-                for idx_p, path in enumerate(downloaded_files):
-                    try:
-                        clip = VideoFileClip(path)
-                        video_clips_opened.append(clip)
-                        mirror = random.choice([True, False])
-
-                        # Lật hình ngẫu nhiên 50% để chống quét bản quyền
-                        if mirror:
-                            clip_mod = clip.fx(lambda c: c.image_transform(lambda im: im[:, ::-1]))
+                            err_msg = f"⚠️ Lỗi file {os.path.basename(path)}: {str(e)}"
+                            error_logs.append(err_msg)
+                            live_log.add(f"  ⚠️ Bỏ qua: {os.path.basename(path)}")
+                    
+                    if not clips:
+                        live_log.add(f"⚠️ Batch {batch_num}: Không mở được video nào, bỏ qua.")
+                        continue
+                    
+                    final_video = concatenate_videoclips(clips, method="chain")
+                    total_dur = final_video.duration
+                    
+                    if not keep_audio and music_path and os.path.exists(music_path):
+                        mc = AudioFileClip(music_path)
+                        if mc.duration < total_dur:
+                            looped = audio_loop(mc, duration=total_dur)
+                            final_video = final_video.set_audio(looped)
                         else:
-                            clip_mod = clip
-
-                        if not keep_audio:
-                            clip_mod = clip_mod.without_audio()
-
-                        clips.append(clip_mod)
-                        live_log.add(f"  📂 Clip {idx_p+1}/{len(downloaded_files)}: {os.path.basename(path)} ({clip.duration:.1f}s){' 🪞 Mirror' if mirror else ''}")
-                    except Exception as e:
-                        err_msg = f"⚠️ Bỏ qua file lỗi {os.path.basename(path)}: {str(e)}"
-                        error_logs.append(err_msg)
-                        live_log.add(f"  ⚠️ Lỗi mở file: {os.path.basename(path)}")
-                        st.toast(err_msg[:80])
-
-                if not clips:
-                    status_area.error("❌ Không mở được video nào để ghép.")
-                    st.stop()
-
-                live_log.add(f"📊 Đã nạp thành công {len(clips)} clip.")
-
-                # Tính toán thời lượng transition thực tế để tránh crash
-                actual_trans_duration = 0.0
-                if transition_mode != "❌ Không có (None)" and transition_duration > 0:
-                    min_clip_dur = min([c.duration for c in clips]) if clips else 0
-                    actual_trans_duration = min(transition_duration, min_clip_dur / 2)
-                    live_log.add(f"🎬 Chuyển cảnh: {transition_mode} | Thời lượng thực tế: {actual_trans_duration:.2f}s (clip ngắn nhất: {min_clip_dur:.2f}s)")
-                    st.toast(f"ℹ️ Thời lượng chuyển cảnh thực tế: {actual_trans_duration:.2f}s")
+                            final_video = final_video.set_audio(mc.set_duration(total_dur))
+                
                 else:
-                    live_log.add("🎬 Không áp dụng chuyển cảnh.")
-
-                # Áp dụng chuyển cảnh
-                if transition_mode == "🌸 Hòa tan (Crossfade)" and actual_trans_duration > 0:
-                    live_log.add("🌸 Đang áp dụng hiệu ứng Crossfade...")
-                    processed_clips = []
-                    for i, clip in enumerate(clips):
-                        if i == 0:
-                            processed_clips.append(clip)
-                        else:
-                            processed_clips.append(clip.crossfadein(actual_trans_duration))
-                    final_video = concatenate_videoclips(processed_clips, padding=-actual_trans_duration, method="compose")
-                elif transition_mode == "⚫ Mờ dần qua đen (Fade to Black)" and actual_trans_duration > 0:
-                    live_log.add("⚫ Đang áp dụng hiệu ứng Fade to Black...")
-                    processed_clips = []
-                    for clip in clips:
-                        faded = clip.fadein(actual_trans_duration).fadeout(actual_trans_duration)
-                        processed_clips.append(faded)
-                    final_video = concatenate_videoclips(processed_clips, method="compose")
-                else:
-                    final_video = concatenate_videoclips(clips, method="compose")
-
-                total_dur = final_video.duration
-                live_log.add(f"✅ Ghép xong! Tổng thời lượng: {total_dur:.1f}s")
-
-                # Ghép nhạc nền nếu tắt âm thanh gốc
-                if not keep_audio and music_path and os.path.exists(music_path):
+                    # Chế độ trộn ngẫu nhiên
+                    if not music_path or not os.path.exists(music_path):
+                        status_area.error("❌ Chế độ trộn ngẫu nhiên yêu cầu phải có file nhạc nền.")
+                        st.stop()
+                    
                     mc = AudioFileClip(music_path)
-                    if mc.duration < total_dur:
-                        looped = audio_loop(mc, duration=total_dur)
-                        final_video = final_video.set_audio(looped)
-                    else:
-                        final_video = final_video.set_audio(mc.set_duration(total_dur))
-
-            else:
-                # Chế độ trộn ngẫu nhiên
-                live_log.add("🎲 Chế độ: Trộn ngẫu nhiên theo nhạc.")
-                if not music_path or not os.path.exists(music_path):
-                    status_area.error("❌ Chế độ trộn ngẫu nhiên yêu cầu phải có file nhạc nền.")
-                    st.stop()
-
-                mc = AudioFileClip(music_path)
-                total_dur = mc.duration
-                live_log.add(f"🎵 Nhạc nền: {total_dur:.1f}s")
-
-                loaded_videos = []
-                for path in downloaded_files:
+                    total_dur = mc.duration
+                    live_log.add(f"🎵 Nhạc nền: {total_dur:.1f}s")
+                    
+                    loaded_videos = []
+                    for path in downloaded_files:
+                        try:
+                            clip = VideoFileClip(path)
+                            video_clips_opened.append(clip)
+                            if clip.duration > segment_duration:
+                                loaded_videos.append(clip)
+                        except:
+                            pass
+                    
+                    if not loaded_videos:
+                        live_log.add(f"⚠️ Batch {batch_num}: Không đủ video dài, bỏ qua.")
+                        continue
+                    
+                    clips = []
+                    current_dur = 0.0
+                    while current_dur < total_dur:
+                        video = random.choice(loaded_videos)
+                        start_t = random.uniform(0, video.duration - segment_duration)
+                        sub = video.subclip(start_t, start_t + segment_duration).without_audio()
+                        if random.choice([True, False]):
+                            sub = sub.fl_image(lambda frame: frame[:, ::-1])
+                        clips.append(sub)
+                        current_dur += segment_duration
+                    
+                    final_video = concatenate_videoclips(clips, method="chain")
+                    final_video = final_video.set_duration(total_dur)
+                    final_video = final_video.set_audio(mc)
+                
+                live_log.add(f"✅ Ghép xong! {len(clips)} clip • {total_dur:.1f}s")
+                
+                # ========== BƯỚC 3: RENDER ==========
+                pct = batch_pct_base + int(batch_pct_range * 0.7)
+                progress_bar.progress(min(99, pct))
+                live_log.add(f"🎞️ [3/3] Render → {os.path.basename(batch_output)}")
+                
+                status_area.markdown(f"""
+                <div class="status-box">
+                    <b>📦 Batch {batch_num}/{total_batches} — 🎞️ Đang render video...</b>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                logger = StreamlitLogger(
+                    progress_bar=progress_bar,
+                    status_area=status_area,
+                    status_prefix=f"Batch {batch_num}/{total_batches} — Render ({total_dur:.1f}s)",
+                    live_log=live_log
+                )
+                
+                # Override progress mapping for batch
+                def make_batch_logger(base_pct, pct_range):
+                    class BatchLogger(ProgressBarLogger):
+                        def __init__(self):
+                            super().__init__()
+                            self.last_pct = -1
+                        def bars_callback(self, bar, attr, value, old_value=None):
+                            if bar != 't':
+                                return
+                            total = self.bars[bar]['total']
+                            if total:
+                                percent = min(1.0, max(0.0, value / total))
+                                pct_int = int(percent * 100)
+                                if pct_int != self.last_pct:
+                                    self.last_pct = pct_int
+                                    st_pct = base_pct + int(pct_range * 0.3 * percent)
+                                    progress_bar.progress(min(99, st_pct))
+                                    status_area.markdown(f"""
+                                    <div class="status-box">
+                                        <b>📦 Batch {batch_num}/{total_batches} — 🎞️ Render ({pct_int}%)</b>
+                                    </div>
+                                    """, unsafe_allow_html=True)
+                                    if pct_int % 10 == 0:
+                                        live_log.add(f"🎞️ Render: {pct_int}%")
+                    return BatchLogger()
+                
+                batch_logger = make_batch_logger(
+                    batch_pct_base + int(batch_pct_range * 0.7),
+                    batch_pct_range
+                )
+                
+                final_video.write_videofile(
+                    batch_output,
+                    fps=24,
+                    codec="libx264",
+                    audio_codec="aac",
+                    threads=2,
+                    preset='ultrafast',
+                    logger=batch_logger
+                )
+                
+                # Giải phóng bộ nhớ ngay
+                final_video.close()
+                for c in video_clips_opened:
                     try:
-                        clip = VideoFileClip(path)
-                        video_clips_opened.append(clip)
-                        if clip.duration > segment_duration:
-                            loaded_videos.append(clip)
-                            live_log.add(f"  📂 Nạp clip: {os.path.basename(path)} ({clip.duration:.1f}s)")
-                        else:
-                            live_log.add(f"  ⏭️ Bỏ qua clip quá ngắn: {os.path.basename(path)} ({clip.duration:.1f}s < {segment_duration}s)")
+                        c.close()
                     except:
                         pass
-
-                if not loaded_videos:
-                    status_area.error("❌ Không có video nào đủ dài để cắt phân đoạn.")
-                    st.stop()
-
-                live_log.add(f"📊 Đã nạp {len(loaded_videos)} clip đủ điều kiện. Bắt đầu cắt phân đoạn {segment_duration}s...")
-
-                # Tính toán thời lượng transition thực tế để tránh crash
-                actual_trans_duration = 0.0
-                if transition_mode != "❌ Không có (None)" and transition_duration > 0:
-                    actual_trans_duration = min(transition_duration, segment_duration / 2)
-                    live_log.add(f"🎬 Chuyển cảnh: {transition_mode} | Thời lượng thực tế: {actual_trans_duration:.2f}s")
-                    st.toast(f"ℹ️ Thời lượng chuyển cảnh thực tế: {actual_trans_duration:.2f}s")
-
-                clips = []
-                current_dur = 0.0
-                while current_dur < total_dur:
-                    video = random.choice(loaded_videos)
-                    start_t = random.uniform(0, video.duration - segment_duration)
-                    sub = video.subclip(start_t, start_t + segment_duration).without_audio()
-                    if random.choice([True, False]):
-                        sub = sub.fx(lambda c: c.image_transform(lambda im: im[:, ::-1]))
-                    clips.append(sub)
-                    
-                    if transition_mode == "🌸 Hòa tan (Crossfade)" and len(clips) > 1:
-                        current_dur += (segment_duration - actual_trans_duration)
-                    else:
-                        current_dur += segment_duration
-
-                live_log.add(f"✂️ Đã cắt {len(clips)} phân đoạn. Đang ghép video...")
-
-                if transition_mode == "🌸 Hòa tan (Crossfade)" and actual_trans_duration > 0:
-                    live_log.add("🌸 Đang áp dụng hiệu ứng Crossfade...")
-                    processed_clips = []
-                    for i, clip in enumerate(clips):
-                        if i == 0:
-                            processed_clips.append(clip)
-                        else:
-                            processed_clips.append(clip.crossfadein(actual_trans_duration))
-                    final_video = concatenate_videoclips(processed_clips, padding=-actual_trans_duration, method="compose")
-                elif transition_mode == "⚫ Mờ dần qua đen (Fade to Black)" and actual_trans_duration > 0:
-                    live_log.add("⚫ Đang áp dụng hiệu ứng Fade to Black...")
-                    processed_clips = []
-                    for clip in clips:
-                        faded = clip.fadein(actual_trans_duration).fadeout(actual_trans_duration)
-                        processed_clips.append(faded)
-                    final_video = concatenate_videoclips(processed_clips, method="compose")
-                else:
-                    final_video = concatenate_videoclips(clips, method="compose")
-
-                final_video = final_video.set_duration(total_dur)
-                final_video = final_video.set_audio(mc)
-                live_log.add(f"✅ Ghép xong! Tổng thời lượng: {total_dur:.1f}s")
-
-            # ========== BƯỚC 3: RENDER ==========
-            live_log.add(f"🎞️ [BƯỚC 3/3] Bắt đầu render video ({total_dur:.1f}s) → {OUTPUT_FILE}")
-            live_log.add(f"  ⚙️ Cấu hình: fps=24, codec=libx264, audio=aac, threads=4")
-            status_area.markdown(f"""
-            <div class="status-box">
-                <b>🎞️ [Bước 3/3] Đang render video ({total_dur:.1f}s). Vui lòng chờ...</b>
-            </div>
-            """, unsafe_allow_html=True)
-            progress_bar.progress(70)
-
-            logger = StreamlitLogger(
-                progress_bar=progress_bar,
-                status_area=status_area,
-                status_prefix=f"[Bước 3/3] Đang render video ({total_dur:.1f}s)",
-                live_log=live_log
-            )
-
-            final_video.write_videofile(
-                OUTPUT_FILE,
-                fps=24,
-                codec="libx264",
-                audio_codec="aac",
-                threads=4,
-                logger=logger
-            )
-
-            # Giải phóng bộ nhớ
-            final_video.close()
-            for c in video_clips_opened:
-                try:
-                    c.close()
-                except:
-                    pass
-
-            progress_bar.progress(100)
-            live_log.add("🎞️ Render hoàn tất 100%.")
-
-            # ========== HIỂN THỊ KẾT QUẢ ==========
-            file_size_mb = os.path.getsize(OUTPUT_FILE) / (1024 * 1024)
-            live_log.add(f"🎉 HOÀN THÀNH! {len(clips)} clip • {total_dur:.1f}s • {file_size_mb:.1f} MB")
+                del clips, video_clips_opened, final_video
+                gc.collect()
+                
+                # Lưu kết quả
+                file_size_mb = os.path.getsize(batch_output) / (1024 * 1024)
+                completed_videos.append({
+                    'path': batch_output,
+                    'batch_num': batch_num,
+                    'clip_count': len(downloaded_files),
+                    'duration': total_dur,
+                    'size_mb': file_size_mb,
+                })
+                live_log.add(f"🎉 Batch {batch_num} HOÀN THÀNH! {file_size_mb:.1f} MB")
+                
+                # Dọn file tải về để giải phóng disk
+                for f in glob.glob(os.path.join(DOWNLOAD_DIR, "*")):
+                    try:
+                        os.remove(f)
+                    except:
+                        pass
+                gc.collect()
+                
+            except Exception as e:
+                error_logs.append(f"❌ Batch {batch_num} lỗi: {str(e)}")
+                live_log.add(f"💥 LỖI BATCH {batch_num}: {str(e)}")
+                # Giải phóng RAM nếu bị lỗi
+                gc.collect()
+                continue
+        
+        # ========== HIỂN THỊ TẤT CẢ KẾT QUẢ ==========
+        progress_bar.progress(100)
+        
+        if completed_videos:
+            live_log.add(f"")
+            live_log.add(f"{'='*40}")
+            live_log.add(f"🏁 HOÀN THÀNH TẤT CẢ: {len(completed_videos)}/{total_batches} batch thành công!")
+            live_log.add(f"{'='*40}")
+            
             status_area.markdown(f"""
             <div class="status-box" style="border-left-color: #00c853;">
-                <b>🎉 Hoàn thành! Video đã sẵn sàng.</b><br>
-                📊 Đã ghép <b>{len(clips)}</b> clip • Tổng thời lượng: <b>{total_dur:.1f}s</b> • Dung lượng: <b>{file_size_mb:.1f} MB</b>
+                <b>🎉 Hoàn thành! {len(completed_videos)}/{total_batches} batch thành công.</b><br>
+                📊 Tổng cộng <b>{len(completed_videos)}</b> video đã sẵn sàng tải về.
             </div>
             """, unsafe_allow_html=True)
-
-            # Preview video
-            with open(OUTPUT_FILE, 'rb') as vf:
-                video_bytes = vf.read()
-            video_preview.video(video_bytes)
-
-            # Nút download
-            download_area.download_button(
-                label="📥 TẢI VIDEO VỀ MÁY",
-                data=video_bytes,
-                file_name="tiktok_compilation.mp4",
-                mime="video/mp4",
-                use_container_width=True
-            )
-
-        except Exception as e:
-            status_area.error(f"❌ Lỗi: {e}")
-            progress_bar.progress(0)
-            error_logs.append(f"❌ Lỗi hệ thống: {str(e)}")
-            if 'live_log' in locals():
-                live_log.add(f"💥 LỖI HỆ THỐNG: {str(e)}")
-        finally:
-            if 'error_logs' in locals() and error_logs:
-                with log_area.container():
+            
+            # Hiển thị danh sách video
+            with video_preview.container():
+                for vid in completed_videos:
+                    st.markdown(f"""
+                    <div class="card" style="margin-bottom: 10px;">
+                        <h4>📦 Batch {vid['batch_num']} — {vid['clip_count']} clip • {vid['duration']:.1f}s • {vid['size_mb']:.1f} MB</h4>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    with open(vid['path'], 'rb') as vf:
+                        video_bytes = vf.read()
+                    st.video(video_bytes)
+                    st.download_button(
+                        label=f"📥 TẢI BATCH {vid['batch_num']}",
+                        data=video_bytes,
+                        file_name=f"tiktok_batch_{vid['batch_num']}.mp4",
+                        mime="video/mp4",
+                        use_container_width=True,
+                        key=f"dl_batch_{vid['batch_num']}"
+                    )
                     st.markdown("---")
-                    st.markdown("### ⚠️ Nhật ký lỗi (Logs)")
-                    st.code("\n".join(error_logs), language="text")
+        else:
+            status_area.error("❌ Không có batch nào hoàn thành thành công.")
+            progress_bar.progress(0)
+        
+        if error_logs:
+            with log_area.container():
+                st.markdown("---")
+                st.markdown("### ⚠️ Nhật ký lỗi (Logs)")
+                st.code("\n".join(error_logs), language="text")
