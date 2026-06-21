@@ -588,16 +588,34 @@ if start_btn:
                 
                 video_clips_opened = []
                 
+                # Chuẩn hóa resolution để tránh nhiễu khi ghép video khác kích thước
+                TARGET_W, TARGET_H = 1080, 1920
+                
+                def normalize_clip(clip):
+                    """Resize clip về kích thước chuẩn để tránh nhiễu."""
+                    w, h = clip.size
+                    if w != TARGET_W or h != TARGET_H:
+                        return clip.resize((TARGET_W, TARGET_H))
+                    return clip
+                
+                def mirror_frame(frame):
+                    """Lật ngang frame (copy an toàn, tránh numpy view bug)."""
+                    return frame[:, ::-1].copy()
+                
                 if mix_mode == "🔗 Ghép nối tiếp nguyên bản":
                     clips = []
                     for idx_p, path in enumerate(downloaded_files):
                         try:
                             clip = VideoFileClip(path)
                             video_clips_opened.append(clip)
+                            
+                            # Chuẩn hóa kích thước
+                            clip = normalize_clip(clip)
+                            
                             mirror = random.choice([True, False])
                             
                             if mirror:
-                                clip_mod = clip.fl_image(lambda frame: frame[:, ::-1])
+                                clip_mod = clip.fl_image(mirror_frame)
                             else:
                                 clip_mod = clip
                             
@@ -615,7 +633,7 @@ if start_btn:
                         live_log.add(f"⚠️ Batch {batch_num}: Không mở được video nào, bỏ qua.")
                         continue
                     
-                    final_video = concatenate_videoclips(clips, method="chain")
+                    final_video = concatenate_videoclips(clips, method="compose")
                     total_dur = final_video.duration
                     
                     if not keep_audio and music_path and os.path.exists(music_path):
@@ -641,6 +659,7 @@ if start_btn:
                         try:
                             clip = VideoFileClip(path)
                             video_clips_opened.append(clip)
+                            clip = normalize_clip(clip)
                             if clip.duration > segment_duration:
                                 loaded_videos.append(clip)
                         except:
@@ -657,11 +676,11 @@ if start_btn:
                         start_t = random.uniform(0, video.duration - segment_duration)
                         sub = video.subclip(start_t, start_t + segment_duration).without_audio()
                         if random.choice([True, False]):
-                            sub = sub.fl_image(lambda frame: frame[:, ::-1])
+                            sub = sub.fl_image(mirror_frame)
                         clips.append(sub)
                         current_dur += segment_duration
                     
-                    final_video = concatenate_videoclips(clips, method="chain")
+                    final_video = concatenate_videoclips(clips, method="compose")
                     final_video = final_video.set_duration(total_dur)
                     final_video = final_video.set_audio(mc)
                 
