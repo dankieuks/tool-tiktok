@@ -819,35 +819,7 @@ if start_btn:
                     )
                     st.markdown("---")
                 
-                # ========== TỰ ĐỘNG TẢI TỪNG VIDEO ==========
-                live_log.add(f"⬇️ Tự động tải {len(completed_videos)} video về máy...")
                 
-                # Tạo JS tự động tải từng file MP4 (delay 1s giữa mỗi file)
-                js_parts = []
-                for idx_v, vid in enumerate(completed_videos):
-                    with open(vid['path'], 'rb') as vf:
-                        b64_data = base64.b64encode(vf.read()).decode()
-                    delay_ms = idx_v * 1500  # Delay 1.5s giữa mỗi file để trình duyệt không chặn
-                    js_parts.append(f"""
-                        setTimeout(function() {{
-                            var link = document.createElement('a');
-                            link.href = 'data:video/mp4;base64,{b64_data}';
-                            link.download = 'tiktok_batch_{vid["batch_num"]}.mp4';
-                            document.body.appendChild(link);
-                            link.click();
-                            document.body.removeChild(link);
-                        }}, {delay_ms});
-                    """)
-                
-                auto_download_js = f"""
-                <script>
-                (function() {{
-                    {"".join(js_parts)}
-                }})();
-                </script>
-                """
-                st.components.v1.html(auto_download_js, height=0)
-                live_log.add(f"✅ Đã kích hoạt tải tự động {len(completed_videos)} file MP4!")
                 
                 # Nút dự phòng: TẢI TẤT CẢ (ZIP)
                 zip_path = os.path.join(OUTPUT_DIR, "tiktok_all_videos.zip")
