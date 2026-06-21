@@ -4,6 +4,8 @@ import random
 import tempfile
 import gc
 import re
+import zipfile
+import base64
 import streamlit as st
 from yt_dlp import YoutubeDL
 from moviepy.editor import VideoFileClip, concatenate_videoclips, AudioFileClip
@@ -797,6 +799,59 @@ if start_btn:
                         key=f"dl_batch_{vid['batch_num']}"
                     )
                     st.markdown("---")
+                
+                # ========== TỰ ĐỘNG TẢI TỪNG VIDEO ==========
+                live_log.add(f"⬇️ Tự động tải {len(completed_videos)} video về máy...")
+                
+                # Tạo JS tự động tải từng file MP4 (delay 1s giữa mỗi file)
+                js_parts = []
+                for idx_v, vid in enumerate(completed_videos):
+                    with open(vid['path'], 'rb') as vf:
+                        b64_data = base64.b64encode(vf.read()).decode()
+                    delay_ms = idx_v * 1500  # Delay 1.5s giữa mỗi file để trình duyệt không chặn
+                    js_parts.append(f"""
+                        setTimeout(function() {{
+                            var link = document.createElement('a');
+                            link.href = 'data:video/mp4;base64,{b64_data}';
+                            link.download = 'tiktok_batch_{vid["batch_num"]}.mp4';
+                            document.body.appendChild(link);
+                            link.click();
+                            document.body.removeChild(link);
+                        }}, {delay_ms});
+                    """)
+                
+                auto_download_js = f"""
+                <script>
+                (function() {{
+                    {"".join(js_parts)}
+                }})();
+                </script>
+                """
+                st.components.v1.html(auto_download_js, height=0)
+                live_log.add(f"✅ Đã kích hoạt tải tự động {len(completed_videos)} file MP4!")
+                
+                # Nút dự phòng: TẢI TẤT CẢ (ZIP)
+                zip_path = os.path.join(OUTPUT_DIR, "tiktok_all_videos.zip")
+                with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                    for vid in completed_videos:
+                        zf.write(vid['path'], f"tiktok_batch_{vid['batch_num']}.mp4")
+                with open(zip_path, 'rb') as zf:
+                    zip_bytes = zf.read()
+                zip_size_mb = len(zip_bytes) / (1024 * 1024)
+                
+                st.markdown(f"""
+                <div class="section-header" style="text-align: center;">
+                    <h3>📦 Dự phòng: Tải tất cả dạng ZIP ({zip_size_mb:.1f} MB)</h3>
+                </div>
+                """, unsafe_allow_html=True)
+                st.download_button(
+                    label=f"📥 TẢI TẤT CẢ DẠNG ZIP ({len(completed_videos)} VIDEO) — {zip_size_mb:.1f} MB",
+                    data=zip_bytes,
+                    file_name="tiktok_all_videos.zip",
+                    mime="application/zip",
+                    use_container_width=True,
+                    key="dl_all_zip"
+                )
         else:
             status_area.error("❌ Không có batch nào hoàn thành thành công.")
             progress_bar.progress(0)
