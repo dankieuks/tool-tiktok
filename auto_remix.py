@@ -2,6 +2,7 @@ import os
 import sys
 import random
 import glob
+import re
 from yt_dlp import YoutubeDL
 from moviepy.editor import VideoFileClip, concatenate_videoclips, AudioFileClip
 from moviepy.audio.fx.all import audio_loop
@@ -40,12 +41,13 @@ def download_tiktok_videos(urls_file):
 
     urls = []
     with open(urls_file, "r", encoding="utf-8") as f:
-        for line in f.readlines():
-            line_str = line.strip()
-            if line_str and not line_str.startswith("#"):
-                if "?" in line_str:
-                    line_str = line_str.split("?")[0]
-                urls.append(line_str)
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#"):
+                match = re.search(r'(https?://[^\s]+)', line)
+                if match:
+                    clean_url = match.group(1).split("?")[0]
+                    urls.append(clean_url)
 
     if not urls:
         print("[!] File urls.txt trong. Vui long them link TikTok de tai.")
@@ -74,7 +76,10 @@ def download_tiktok_videos(urls_file):
                     with YoutubeDL(channel_opts) as ydl_channel:
                         ydl_channel.download([url])
                 else:
-                    print(f"\n[*] Dang tai video {idx}/{len(urls)}: {url}")
+                    if "vt.tiktok.com" in url:
+                        print(f"\n[*] Dang tai video ngan tu mobile {idx}/{len(urls)}: {url}")
+                    else:
+                        print(f"\n[*] Dang tai video {idx}/{len(urls)}: {url}")
                     ydl.download([url])
             except Exception as e:
                 print(f"[!] Tai video that bai {url}: {e}")

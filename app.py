@@ -3,6 +3,7 @@ import glob
 import random
 import tempfile
 import gc
+import re
 import streamlit as st
 from yt_dlp import YoutubeDL
 from moviepy.editor import VideoFileClip, concatenate_videoclips, AudioFileClip
@@ -345,9 +346,13 @@ with col_left:
         )
         raw_urls = [u.strip() for u in urls_input.split("\n") if u.strip() and not u.strip().startswith("#")]
         for u in raw_urls:
-            if "?" in u:
-                u = u.split("?")[0]
-            valid_urls.append(u)
+            # Tự động trích xuất link (bỏ qua các văn bản thừa khi copy từ điện thoại)
+            match = re.search(r'(https?://[^\s]+)', u)
+            if match:
+                clean_url = match.group(1)
+                if "?" in clean_url:
+                    clean_url = clean_url.split("?")[0]
+                valid_urls.append(clean_url)
             
         if valid_urls:
             st.caption(f"✅ Đã nhận **{len(valid_urls)}** link hợp lệ")
@@ -363,7 +368,9 @@ with col_left:
             min_value=1, max_value=20, value=10, step=1
         )
         cleaned_channel_url = channel_url.strip()
-        if cleaned_channel_url:
+        match = re.search(r'(https?://[^\s]+)', cleaned_channel_url)
+        if match:
+            cleaned_channel_url = match.group(1)
             if "?" in cleaned_channel_url:
                 cleaned_channel_url = cleaned_channel_url.split("?")[0]
             valid_urls = [cleaned_channel_url]
