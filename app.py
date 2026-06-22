@@ -6,6 +6,7 @@ import gc
 import re
 import zipfile
 import base64
+import subprocess
 import streamlit as st
 from yt_dlp import YoutubeDL
 from moviepy.editor import VideoFileClip, concatenate_videoclips, AudioFileClip
@@ -410,6 +411,80 @@ with col_left:
             min_value=1.0, max_value=10.0, value=3.0, step=0.5
         )
 
+    # Phối lại âm thanh
+    st.markdown("")
+    st.markdown("""
+    <div class="section-header">
+        <h3>🎛️ Phối lại âm thanh (né Content ID)</h3>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    audio_remix = st.toggle("🎛️ Bật phối lại âm thanh", value=False)
+    
+    audio_pitch = 0
+    audio_speed = 1.0
+    audio_bass = 0
+    audio_reverb = False
+    audio_eq_random = False
+    audio_compressor = False
+    audio_stereo = False
+    
+    if audio_remix:
+        remix_level = st.radio(
+            "Mức độ phối lại:",
+            ["🟢 Nhẹ (khó nhận ra)", "🟡 Vừa (an toàn)", "🔴 Mạnh (né YouTube Content ID)"],
+            index=1,
+            horizontal=True
+        )
+        
+        if remix_level == "🟢 Nhẹ (khó nhận ra)":
+            audio_pitch = 1
+            audio_speed = 1.02
+            audio_bass = 2
+            audio_reverb = False
+            audio_eq_random = False
+            audio_compressor = False
+            audio_stereo = False
+        elif remix_level == "🟡 Vừa (an toàn)":
+            audio_pitch = 2
+            audio_speed = 1.04
+            audio_bass = 4
+            audio_reverb = True
+            audio_eq_random = True
+            audio_compressor = False
+            audio_stereo = False
+        else:  # Mạnh
+            audio_pitch = 3
+            audio_speed = 1.06
+            audio_bass = 5
+            audio_reverb = True
+            audio_eq_random = True
+            audio_compressor = True
+            audio_stereo = True
+        
+        with st.expander("⚙️ Tuỳ chỉnh chi tiết", expanded=False):
+            audio_pitch = st.slider(
+                "🎵 Cao độ (semitone):",
+                min_value=-5, max_value=5, value=audio_pitch, step=1,
+                help="Dương = cao hơn, Âm = trầm hơn."
+            )
+            audio_speed = st.slider(
+                "⏩ Tốc độ:",
+                min_value=0.90, max_value=1.15, value=audio_speed, step=0.01,
+                help="1.04-1.06 hiệu quả nhất."
+            )
+            audio_bass = st.slider(
+                "🔊 Bass boost (dB):",
+                min_value=0, max_value=10, value=audio_bass, step=1
+            )
+            audio_reverb = st.toggle("🏛️ Reverb (vang)", value=audio_reverb)
+            audio_eq_random = st.toggle("🎚️ Random EQ (biến dạng tần số)", value=audio_eq_random,
+                help="Ngẫu nhiên boost/cut các dải tần — rất hiệu quả phá fingerprint.")
+            audio_compressor = st.toggle("🔧 Nén âm thanh (Compressor)", value=audio_compressor,
+                help="Thay đổi dynamic range, phá vỡ dấu vân tay âm thanh.")
+            audio_stereo = st.toggle("🎧 Mở rộng stereo", value=audio_stereo,
+                help="Thay đổi pha stereo, rất khó bị nhận diện lại.")
+
 
     st.markdown("")
     start_btn = st.button("🚀 BẮT ĐẦU XỬ LÝ", use_container_width=True)
@@ -754,6 +829,100 @@ if start_btn:
                         pass
                 del clips, video_clips_opened, final_video
                 gc.collect()
+                
+                # ========== PHỐI LẠI ÂM THANH (nếu bật) ==========
+                if audio_remix:
+                    live_log.add(f"🎛️ Đang phối lại âm thanh (né Content ID)...")
+                    status_area.markdown(f"""
+                    <div class="status-box">
+                        <b>📦 Batch {batch_num}/{total_batches} — 🎛️ Phối lại âm thanh...</b>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    # Xây dựng chuỗi audio filter cho ffmpeg
+                    af_filters = []
+                    
+                    # 1. Pitch shift
+                    if audio_pitch != 0:
+                        pitch_factor = 2 ** (audio_pitch / 12.0)
+                        af_filters.append(f"asetrate=44100*{pitch_factor:.4f}")
+                        af_filters.append("aresample=44100")
+                        live_log.add(f"  🎵 Pitch: {'+' if audio_pitch > 0 else ''}{audio_pitch} semitone")
+                    
+                    # 2. Speed change
+                    if audio_speed != 1.0:
+                        af_filters.append(f"atempo={audio_speed:.2f}")
+                        live_log.add(f"  ⏩ Speed: {audio_speed:.2f}x")
+                    
+                    # 3. Random EQ — phá fingerprint tần số
+                    if audio_eq_random:
+                        # Ngẫu nhiên boost/cut 3 dải tần khác nhau
+                        freqs = random.sample([200, 400, 800, 1200, 2000, 3500, 5000, 8000], 3)
+                        for freq in freqs:
+                            gain = random.choice([-4, -3, -2, 2, 3, 4, 5])
+                            width = random.choice([100, 200, 300])
+                            af_filters.append(f"equalizer=f={freq}:t=h:w={width}:g={gain}")
+                        live_log.add(f"  🎚️ Random EQ: {len(freqs)} dải tần")
+                    
+                    # 4. Bass boost
+                    if audio_bass > 0:
+                        af_filters.append(f"bass=g={audio_bass}")
+                        live_log.add(f"  🔊 Bass: +{audio_bass}dB")
+                    
+                    # 5. Audio Compressor — thay đổi dynamic range
+                    if audio_compressor:
+                        af_filters.append("acompressor=threshold=-20dB:ratio=4:attack=5:release=50")
+                        live_log.add(f"  🔧 Compressor: ON")
+                    
+                    # 6. Stereo widening — thay đổi pha stereo
+                    if audio_stereo:
+                        af_filters.append("stereotools=mlev=0.015:slev=1.3:sbal=0.1")
+                        af_filters.append("aphaser=type=t:speed=0.5:decay=0.3")
+                        live_log.add(f"  🎧 Stereo widen + Phaser: ON")
+                    
+                    # 7. Reverb
+                    if audio_reverb:
+                        af_filters.append("aecho=0.8:0.85:40:0.3")
+                        live_log.add(f"  🏛️ Reverb: ON")
+                    
+                    # 8. Highpass — loại bỏ sub-bass (thay đổi waveform)
+                    af_filters.append("highpass=f=60")
+                    
+                    if af_filters:
+                        remixed_output = batch_output.replace(".mp4", "_remixed.mp4")
+                        af_string = ",".join(af_filters)
+                        
+                        ffmpeg_cmd = [
+                            "ffmpeg", "-y", "-i", batch_output,
+                            "-af", af_string,
+                            "-c:v", "copy",
+                            "-c:a", "aac",
+                            "-b:a", "192k",
+                            remixed_output
+                        ]
+                        
+                        try:
+                            result = subprocess.run(
+                                ffmpeg_cmd,
+                                capture_output=True, text=True, timeout=180
+                            )
+                            if result.returncode == 0 and os.path.exists(remixed_output):
+                                os.replace(remixed_output, batch_output)
+                                live_log.add(f"  ✅ Phối lại âm thanh thành công!")
+                            else:
+                                live_log.add(f"  ⚠️ FFmpeg lỗi: {result.stderr[:150]}")
+                                error_logs.append(f"⚠️ Batch {batch_num} remix lỗi: {result.stderr[:150]}")
+                        except subprocess.TimeoutExpired:
+                            live_log.add(f"  ⚠️ Phối âm thanh quá lâu, bỏ qua.")
+                        except FileNotFoundError:
+                            live_log.add(f"  ⚠️ Không tìm thấy ffmpeg, bỏ qua remix.")
+                        finally:
+                            if os.path.exists(remixed_output):
+                                try:
+                                    os.remove(remixed_output)
+                                except:
+                                    pass
+                        gc.collect()
                 
                 # Lưu kết quả
                 file_size_mb = os.path.getsize(batch_output) / (1024 * 1024)
