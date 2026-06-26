@@ -7,4 +7,6 @@ music.mp3
 .env
 venv/
 .venv/
+temp_dl/
+temp_out/
 

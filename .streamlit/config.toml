@@ -8,6 +8,11 @@ font = "sans serif"
 [server]
 maxUploadSize = 200
 enableXsrfProtection = true
+fileWatcherType = "none"
+maxMessageSize = 200
 
 [browser]
 gatherUsageStats = false
+
+[runner]
+fastReruns = true

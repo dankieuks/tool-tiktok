@@ -1,33 +1,45 @@
 import os
 import glob
 import random
-import tempfile
 import gc
 import re
 import subprocess
-import streamlit as st
-from yt_dlp import YoutubeDL
-from moviepy.editor import VideoFileClip, concatenate_videoclips, AudioFileClip
-from moviepy.audio.fx.all import audio_loop
+import shutil
 import time
-from proglog import ProgressBarLogger
+import streamlit as st
+import PIL.Image
+
+# Sửa lỗi: module 'PIL.Image' has no attribute 'ANTIALIAS' trong Pillow 10+
+if not hasattr(PIL.Image, 'ANTIALIAS'):
+    PIL.Image.ANTIALIAS = PIL.Image.LANCZOS
+
+from yt_dlp import YoutubeDL
 
 # ==========================================
 # LIVE LOG PANEL - HIỂN THỊ LOG TRỰC TIẾP
 # ==========================================
 class LiveLog:
-    """Quản lý bảng log trực tiếp trên giao diện Streamlit."""
+    """Quản lý bảng log trực tiếp trên giao diện Streamlit (throttle render tối đa 1 lần/giây)."""
     def __init__(self, log_container, max_lines=200):
         self.log_container = log_container
         self.lines = []
         self.max_lines = max_lines
+        self._last_render = 0
     
-    def add(self, msg):
+    def add(self, msg, force=False):
         timestamp = time.strftime("%H:%M:%S")
         self.lines.append(f"[{timestamp}] {msg}")
         if len(self.lines) > self.max_lines:
             self.lines = self.lines[-self.max_lines:]
+        now = time.time()
+        if force or (now - self._last_render) >= 1.0:
+            self._render()
+            self._last_render = now
+    
+    def flush(self):
+        """Buộc render ngay lập tức (gọi khi kết thúc batch hoặc lỗi)."""
         self._render()
+        self._last_render = time.time()
     
     def _render(self):
         log_text = "\n".join(self.lines)
@@ -38,40 +50,243 @@ class LiveLog:
 """, unsafe_allow_html=True)
 
 # ==========================================
-# CUSTOM LOGGER DÀNH CHO MOVIEPY ĐỂ HIỂN THỊ %
+# RENDER VIDEO BẰNG FFMPEG THUẦN (TIẾT KIỆM RAM)
 # ==========================================
-class StreamlitLogger(ProgressBarLogger):
-    def __init__(self, progress_bar, status_area, status_prefix="", live_log=None):
-        super().__init__()
-        self.progress_bar = progress_bar
-        self.status_area = status_area
-        self.status_prefix = status_prefix
-        self.live_log = live_log
-        self.last_percent = -1
+def ffmpeg_concat_videos(input_files, output_path, mirror_flags, normalize_size=(1080, 1920), 
+                         keep_audio=True, music_path=None, live_log=None):
+    """Ghép video bằng ffmpeg thuần - không load frame vào RAM Python.
+    
+    Args:
+        input_files: Danh sách đường dẫn file video đầu vào.
+        output_path: Đường dẫn file video đầu ra.
+        mirror_flags: Dict {index: True/False} cho biết file nào cần lật gương.
+        normalize_size: Tuple (width, height) chuẩn hóa.
+        keep_audio: Giữ âm thanh gốc hay không.
+        music_path: Đường dẫn file nhạc nền (nếu không giữ audio gốc).
+        live_log: LiveLog instance để ghi log.
+    """
+    w, h = normalize_size
+    
+    # Tạo filter_complex cho từng input
+    filter_parts = []
+    concat_inputs = []
+    
+    for i, fpath in enumerate(input_files):
+        # Scale + pad để fit đúng kích thước, giữ tỷ lệ
+        scale_filter = f"scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:black,setsar=1"
+        
+        if mirror_flags.get(i, False):
+            # Lật gương + chuẩn hóa kích thước
+            filter_parts.append(f"[{i}:v]{scale_filter},hflip[v{i}]")
+        else:
+            filter_parts.append(f"[{i}:v]{scale_filter}[v{i}]")
+        
+        if keep_audio:
+            concat_inputs.append(f"[v{i}][{i}:a]")
+        else:
+            concat_inputs.append(f"[v{i}]")
+    
+    n = len(input_files)
+    
+    if keep_audio:
+        concat_filter = f"{''.join(concat_inputs)}concat=n={n}:v=1:a=1[outv][outa]"
+    else:
+        concat_filter = f"{''.join(concat_inputs)}concat=n={n}:v=1:a=0[outv]"
+    
+    full_filter = ";".join(filter_parts) + ";" + concat_filter
+    
+    # Xây dựng lệnh ffmpeg
+    cmd = ["ffmpeg", "-y"]
+    for fpath in input_files:
+        cmd.extend(["-i", fpath])
+    
+    if not keep_audio and music_path and os.path.exists(music_path):
+        cmd.extend(["-i", music_path])  # Input cuối cùng là nhạc nền
+    
+    cmd.extend(["-filter_complex", full_filter])
+    cmd.extend(["-map", "[outv]"])
+    
+    if keep_audio:
+        cmd.extend(["-map", "[outa]"])
+    elif music_path and os.path.exists(music_path):
+        music_idx = len(input_files)
+        cmd.extend(["-map", f"{music_idx}:a", "-shortest"])
+    
+    cmd.extend([
+        "-c:v", "libx264",
+        "-preset", "ultrafast",
+        "-crf", "23",
+        "-c:a", "aac",
+        "-b:a", "128k",
+        "-threads", "2",
+        "-movflags", "+faststart",
+        "-r", "24",
+        output_path
+    ])
+    
+    if live_log:
+        live_log.add(f"🎞️ Đang render bằng FFmpeg ({n} clip)...")
+    
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True, text=True, timeout=600
+        )
+        if result.returncode != 0:
+            # Nếu lỗi concat audio (một số video không có audio track), thử lại không audio
+            if "does not match" in result.stderr or "Stream specifier" in result.stderr:
+                if live_log:
+                    live_log.add("⚠️ Audio không đồng nhất, thử render lại không audio...")
+                return ffmpeg_concat_videos(
+                    input_files, output_path, mirror_flags, normalize_size,
+                    keep_audio=False, music_path=None, live_log=live_log
+                )
+            if live_log:
+                live_log.add(f"⚠️ FFmpeg lỗi: {result.stderr[-200:]}")
+            return False
+        return True
+    except subprocess.TimeoutExpired:
+        if live_log:
+            live_log.add("⚠️ FFmpeg render quá lâu (timeout 10 phút), bỏ qua.")
+        return False
+    except Exception as e:
+        if live_log:
+            live_log.add(f"⚠️ FFmpeg exception: {str(e)[:100]}")
+        return False
 
-    def bars_callback(self, bar, attr, value, old_value=None):
-        if bar != 't':
-            return
-        total = self.bars[bar]['total']
-        if total:
-            percent = min(1.0, max(0.0, value / total))
-            percent_int = int(percent * 100)
+def ffmpeg_get_duration(filepath):
+    """Lấy thời lượng video bằng ffprobe."""
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", filepath],
+            capture_output=True, text=True, timeout=10
+        )
+        return float(result.stdout.strip())
+    except:
+        return 0.0
+
+def ffmpeg_random_mix_videos(input_files, output_path, music_path, segment_duration=3.0,
+                              normalize_size=(1080, 1920), live_log=None):
+    """Trộn ngẫu nhiên các đoạn video ngắn khớp với nhạc nền bằng ffmpeg thuần.
+    
+    Cắt các đoạn ngẫu nhiên từ video nguồn, ghép lại thành video dài khớp nhạc nền.
+    """
+    w, h = normalize_size
+    
+    # Lấy thời lượng nhạc nền
+    music_dur = ffmpeg_get_duration(music_path)
+    if music_dur <= 0:
+        if live_log:
+            live_log.add("⚠️ Không đọc được thời lượng nhạc nền.")
+        return False
+    
+    if live_log:
+        live_log.add(f"🎵 Nhạc nền: {music_dur:.1f}s • Segment: {segment_duration}s")
+    
+    # Lấy thời lượng từng video
+    video_durations = {}
+    usable_files = []
+    for fpath in input_files:
+        dur = ffmpeg_get_duration(fpath)
+        if dur > segment_duration:
+            video_durations[fpath] = dur
+            usable_files.append(fpath)
+    
+    if not usable_files:
+        if live_log:
+            live_log.add("⚠️ Không có video nào đủ dài để cắt segment.")
+        return False
+    
+    # Tạo danh sách các đoạn cắt ngẫu nhiên
+    temp_segments = []
+    current_dur = 0.0
+    seg_idx = 0
+    
+    try:
+        while current_dur < music_dur:
+            src_file = random.choice(usable_files)
+            src_dur = video_durations[src_file]
+            start_t = random.uniform(0, src_dur - segment_duration)
+            mirror = random.choice([True, False])
             
-            if percent_int != self.last_percent:
-                self.last_percent = percent_int
-                st_pct = 0.70 + (percent * 0.30)
-                self.progress_bar.progress(min(1.0, st_pct))
-                
-                self.status_area.markdown(f"""
-                <div class="status-box">
-                    <b>🎞️ {self.status_prefix} ({percent_int}%)</b><br>
-                    Đang ghi các khung hình vào file mp4...
-                </div>
-                """, unsafe_allow_html=True)
-                
-                if self.live_log and percent_int % 10 == 0:
-                    self.live_log.add(f"🎞️ Render tiến trình: {percent_int}%")
-
+            # Cắt segment bằng ffmpeg
+            seg_path = os.path.join(os.path.dirname(output_path), f"_seg_{seg_idx}.mp4")
+            
+            vf_filter = f"scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:black,setsar=1"
+            if mirror:
+                vf_filter += ",hflip"
+            
+            cut_cmd = [
+                "ffmpeg", "-y",
+                "-ss", f"{start_t:.2f}",
+                "-i", src_file,
+                "-t", f"{segment_duration:.2f}",
+                "-vf", vf_filter,
+                "-an",
+                "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
+                "-r", "24",
+                seg_path
+            ]
+            
+            result = subprocess.run(cut_cmd, capture_output=True, text=True, timeout=60)
+            if result.returncode == 0 and os.path.exists(seg_path):
+                temp_segments.append(seg_path)
+                current_dur += segment_duration
+                seg_idx += 1
+            else:
+                continue
+        
+        if not temp_segments:
+            if live_log:
+                live_log.add("⚠️ Không cắt được segment nào.")
+            return False
+        
+        if live_log:
+            live_log.add(f"✂️ Đã cắt {len(temp_segments)} segment ngẫu nhiên")
+        
+        # Tạo file danh sách để concat
+        concat_list_path = os.path.join(os.path.dirname(output_path), "_concat_list.txt")
+        with open(concat_list_path, "w", encoding="utf-8") as f:
+            for seg in temp_segments:
+                f.write(f"file '{seg}'\n")
+        
+        # Ghép tất cả segment + nhạc nền
+        concat_cmd = [
+            "ffmpeg", "-y",
+            "-f", "concat", "-safe", "0",
+            "-i", concat_list_path,
+            "-i", music_path,
+            "-c:v", "copy",
+            "-c:a", "aac", "-b:a", "128k",
+            "-map", "0:v", "-map", "1:a",
+            "-shortest",
+            "-movflags", "+faststart",
+            output_path
+        ]
+        
+        if live_log:
+            live_log.add(f"🎞️ Đang ghép {len(temp_segments)} segment + nhạc nền...")
+        
+        result = subprocess.run(concat_cmd, capture_output=True, text=True, timeout=600)
+        
+        return result.returncode == 0 and os.path.exists(output_path)
+    
+    except Exception as e:
+        if live_log:
+            live_log.add(f"⚠️ Lỗi trộn ngẫu nhiên: {str(e)[:100]}")
+        return False
+    finally:
+        # Dọn dẹp file tạm segment
+        for seg in temp_segments:
+            try:
+                os.remove(seg)
+            except:
+                pass
+        try:
+            os.remove(concat_list_path)
+        except:
+            pass
 
 # ==========================================
 # CẤU HÌNH PWA & WEB ICON
@@ -131,9 +346,88 @@ patch_streamlit_pwa()
 # ==========================================
 # CẤU HÌNH
 # ==========================================
-DOWNLOAD_DIR = tempfile.mkdtemp(prefix="tiktok_dl_")
-OUTPUT_DIR = tempfile.mkdtemp(prefix="tiktok_out_")
+# Cấu hình thư mục tạm nội bộ chạy tool
+DOWNLOAD_DIR = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp_dl"))
+OUTPUT_DIR = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp_out"))
 OUTPUT_FILE = os.path.join(OUTPUT_DIR, "final_music_video.mp4")
+
+def check_and_cleanup_disk_space(required_mb=500, live_log=None, current_batch_num=None):
+    """Kiểm tra dung lượng đĩa trống, tự động xóa cache/tệp cũ của các batch trước nếu dung lượng dưới mức yêu cầu."""
+    total, used, free = shutil.disk_usage(os.path.dirname(os.path.abspath(__file__)))
+    free_mb = free / (1024 * 1024)
+    
+    if free_mb < required_mb:
+        msg = f"⚠️ Cảnh báo: Dung lượng đĩa thấp ({free_mb:.1f} MB < {required_mb} MB). Đang tự động dọn dẹp cache..."
+        if live_log:
+            live_log.add(msg)
+        else:
+            print(msg)
+            
+        # 1. Chỉ dọn dẹp DOWNLOAD_DIR nếu không có batch nào đang chạy (ví dụ: lúc khởi chạy)
+        if current_batch_num is None:
+            if os.path.exists(DOWNLOAD_DIR):
+                for f in glob.glob(os.path.join(DOWNLOAD_DIR, "*")):
+                    try:
+                        if os.path.isdir(f):
+                            shutil.rmtree(f)
+                        else:
+                            os.remove(f)
+                    except:
+                        pass
+        
+        # 2. Dọn dẹp OUTPUT_DIR: xóa các batch cũ để nhường chỗ cho batch mới nếu cần thiết
+        if os.path.exists(OUTPUT_DIR):
+            for f in glob.glob(os.path.join(OUTPUT_DIR, "*")):
+                filename = os.path.basename(f)
+                
+                # Không xóa nhạc nền temp_music.mp3
+                if filename == "temp_music.mp3":
+                    continue
+                
+                # Nếu là file batch mp4
+                if filename.startswith("batch_") and filename.endswith(".mp4"):
+                    match = re.search(r'batch_(\d+)', filename)
+                    if match:
+                        f_batch_num = int(match.group(1))
+                        if current_batch_num is not None and f_batch_num >= current_batch_num:
+                            continue # Không xóa file batch hiện tại đang tạo hoặc sắp tạo
+                    
+                    try:
+                        os.remove(f)
+                        if live_log:
+                            live_log.add(f"  🗑️ Đã xóa batch cũ: {filename} để giải phóng dung lượng.")
+                    except:
+                        pass
+                else:
+                    # Xóa các file rác khác (file tạm của ffmpeg/moviepy còn sót lại)
+                    try:
+                        if os.path.isdir(f):
+                            shutil.rmtree(f)
+                        else:
+                            os.remove(f)
+                    except:
+                        pass
+                        
+        gc.collect()
+        
+        # Kiểm tra lại dung lượng
+        total, used, free = shutil.disk_usage(os.path.dirname(os.path.abspath(__file__)))
+        new_free_mb = free / (1024 * 1024)
+        msg_done = f"✅ Đã dọn dẹp xong. Dung lượng trống hiện tại: {new_free_mb:.1f} MB"
+        if live_log:
+            live_log.add(msg_done)
+        else:
+            print(msg_done)
+
+def init_temp_dirs():
+    """Khởi tạo và làm sạch các thư mục tạm lúc khởi chạy."""
+    os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    # Dọn dẹp hết file cũ khi bắt đầu chạy app
+    check_and_cleanup_disk_space(required_mb=999999)
+
+# Khởi tạo thư mục tạm và xóa rác cũ ngay khi khởi động
+init_temp_dirs()
 
 # ==========================================
 # GIAO DIỆN
@@ -574,32 +868,45 @@ if start_btn:
             """, unsafe_allow_html=True)
             
             try:
-                # Dọn dẹp thư mục tạm
+                # Kiểm tra dung lượng đĩa trống trước khi chạy batch mới
+                check_and_cleanup_disk_space(required_mb=500, live_log=live_log, current_batch_num=batch_num)
+                
+                # Dọn dẹp thư mục tạm để chuẩn bị tải batch mới
                 for f in glob.glob(os.path.join(DOWNLOAD_DIR, "*")):
-                    os.remove(f)
+                    try:
+                        if os.path.isdir(f):
+                            shutil.rmtree(f)
+                        else:
+                            os.remove(f)
+                    except:
+                        pass
                 gc.collect()
                 
                 # ========== BƯỚC 1: TẢI VIDEO ==========
-                live_log.add(f"⬇️ [1/3] Tải {len(batch_urls)} video...")
+                live_log.add(f"⬇️ [1/2] Tải {len(batch_urls)} video...")
                 batch_pct_base = int((batch_idx / total_batches) * 100)
                 batch_pct_range = int(100 / total_batches)
                 
                 ydl_opts = {
                     'outtmpl': os.path.join(DOWNLOAD_DIR, '%(id)s.%(ext)s'),
-                    'format': 'bestvideo+bestaudio/best',
+                    'format': 'best[ext=mp4]/best',
                     'referer': 'https://www.tiktok.com/',
-                    'merge_output_format': 'mp4',
                     'headers': {
                         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
                     },
                     'quiet': True,
                     'no_warnings': True,
+                    'concurrent_fragment_downloads': 3,
+                    'socket_timeout': 30,
+                    'retries': 3,
                 }
                 
                 success_count = 0
                 fail_count = 0
                 with YoutubeDL(ydl_opts) as ydl:
                     for i, url in enumerate(batch_urls):
+                        # Đảm bảo đủ dung lượng trước khi tải từng video
+                        check_and_cleanup_disk_space(required_mb=500, live_log=live_log, current_batch_num=batch_num)
                         pct = batch_pct_base + int((i / len(batch_urls)) * batch_pct_range * 0.4)
                         progress_bar.progress(min(99, pct))
                         
@@ -632,7 +939,7 @@ if start_btn:
                                 last_error = str(e)
                                 live_log.add(f"⚠️ Lỗi (lần {attempt}): {str(e)[:60]}")
                                 if attempt < 3:
-                                    time.sleep(1.0)
+                                    time.sleep(0.5)
                         
                         if not download_success:
                             fail_count += 1
@@ -643,189 +950,69 @@ if start_btn:
                 
                 downloaded_files = sorted(glob.glob(os.path.join(DOWNLOAD_DIR, "*.mp4")))
                 live_log.add(f"📁 Tải xong: {success_count} OK, {fail_count} lỗi → {len(downloaded_files)} file")
+                live_log.flush()
                 
                 if not downloaded_files:
-                    live_log.add(f"⚠️ Batch {batch_num}: Không có video nào, bỏ qua.")
+                    live_log.add(f"⚠️ Batch {batch_num}: Không có video nào, bỏ qua.", force=True)
                     continue
                 
-                # ========== BƯỚC 2: XỬ LÝ & GHÉP VIDEO ==========
-                pct = batch_pct_base + int(batch_pct_range * 0.45)
+                # ========== BƯỚC 2: GHÉP & RENDER VIDEO (FFMPEG THUẦN) ==========
+                pct = batch_pct_base + int(batch_pct_range * 0.5)
                 progress_bar.progress(min(99, pct))
-                live_log.add(f"✂️ [2/3] Ghép video...")
+                live_log.add(f"✂️ [2/2] Ghép & Render video bằng FFmpeg...")
                 
                 status_area.markdown(f"""
                 <div class="status-box">
-                    <b>📦 Batch {batch_num}/{total_batches} — ✂️ Đang ghép video...</b>
+                    <b>📦 Batch {batch_num}/{total_batches} — 🎞️ Đang ghép & render video...</b>
                 </div>
                 """, unsafe_allow_html=True)
                 
-                video_clips_opened = []
+                # Gán mirror flags ngẫu nhiên cho từng video
+                mirror_flags = {}
+                for idx_p, path in enumerate(downloaded_files):
+                    mirror = random.choice([True, False])
+                    mirror_flags[idx_p] = mirror
+                    dur = ffmpeg_get_duration(path)
+                    live_log.add(f"  📂 {os.path.basename(path)} ({dur:.1f}s){' 🪞' if mirror else ''}")
                 
-                # Chuẩn hóa resolution để tránh nhiễu khi ghép video khác kích thước
-                TARGET_W, TARGET_H = 1080, 1920
+                # Kiểm tra dung lượng trước khi render
+                check_and_cleanup_disk_space(required_mb=500, live_log=live_log, current_batch_num=batch_num)
                 
-                def normalize_clip(clip):
-                    """Resize clip về kích thước chuẩn để tránh nhiễu."""
-                    w, h = clip.size
-                    if w != TARGET_W or h != TARGET_H:
-                        return clip.resize((TARGET_W, TARGET_H))
-                    return clip
-                
-                def mirror_frame(frame):
-                    """Lật ngang frame (copy an toàn, tránh numpy view bug)."""
-                    return frame[:, ::-1].copy()
-                
-                if mix_mode == "🔗 Ghép nối tiếp nguyên bản":
-                    clips = []
-                    for idx_p, path in enumerate(downloaded_files):
-                        try:
-                            clip = VideoFileClip(path)
-                            video_clips_opened.append(clip)
-                            
-                            # Chuẩn hóa kích thước
-                            clip = normalize_clip(clip)
-                            
-                            mirror = random.choice([True, False])
-                            
-                            if mirror:
-                                clip_mod = clip.fl_image(mirror_frame)
-                            else:
-                                clip_mod = clip
-                            
-                            if not keep_audio:
-                                clip_mod = clip_mod.without_audio()
-                            
-                            clips.append(clip_mod)
-                            live_log.add(f"  📂 {os.path.basename(path)} ({clip.duration:.1f}s){' 🪞' if mirror else ''}")
-                        except Exception as e:
-                            err_msg = f"⚠️ Lỗi file {os.path.basename(path)}: {str(e)}"
-                            error_logs.append(err_msg)
-                            live_log.add(f"  ⚠️ Bỏ qua: {os.path.basename(path)}")
-                    
-                    if not clips:
-                        live_log.add(f"⚠️ Batch {batch_num}: Không mở được video nào, bỏ qua.")
-                        continue
-                    
-                    final_video = concatenate_videoclips(clips, method="compose")
-                    total_dur = final_video.duration
-                    
-                    if not keep_audio and music_path and os.path.exists(music_path):
-                        mc = AudioFileClip(music_path)
-                        if mc.duration < total_dur:
-                            looped = audio_loop(mc, duration=total_dur)
-                            final_video = final_video.set_audio(looped)
-                        else:
-                            final_video = final_video.set_audio(mc.set_duration(total_dur))
-                
-                else:
-                    # Chế độ trộn ngẫu nhiên
+                # Render bằng ffmpeg thuần (KHÔNG load frame vào RAM Python)
+                if mix_mode == "🎲 Trộn ngẫu nhiên theo nhạc":
+                    # Chế độ trộn ngẫu nhiên: cắt segment + ghép nhạc nền
                     if not music_path or not os.path.exists(music_path):
                         status_area.error("❌ Chế độ trộn ngẫu nhiên yêu cầu phải có file nhạc nền.")
-                        st.stop()
-                    
-                    mc = AudioFileClip(music_path)
-                    total_dur = mc.duration
-                    live_log.add(f"🎵 Nhạc nền: {total_dur:.1f}s")
-                    
-                    loaded_videos = []
-                    for path in downloaded_files:
-                        try:
-                            clip = VideoFileClip(path)
-                            video_clips_opened.append(clip)
-                            clip = normalize_clip(clip)
-                            if clip.duration > segment_duration:
-                                loaded_videos.append(clip)
-                        except:
-                            pass
-                    
-                    if not loaded_videos:
-                        live_log.add(f"⚠️ Batch {batch_num}: Không đủ video dài, bỏ qua.")
+                        live_log.add("❌ Thiếu nhạc nền cho chế độ trộn ngẫu nhiên.", force=True)
                         continue
                     
-                    clips = []
-                    current_dur = 0.0
-                    while current_dur < total_dur:
-                        video = random.choice(loaded_videos)
-                        start_t = random.uniform(0, video.duration - segment_duration)
-                        sub = video.subclip(start_t, start_t + segment_duration).without_audio()
-                        if random.choice([True, False]):
-                            sub = sub.fl_image(mirror_frame)
-                        clips.append(sub)
-                        current_dur += segment_duration
-                    
-                    final_video = concatenate_videoclips(clips, method="compose")
-                    final_video = final_video.set_duration(total_dur)
-                    final_video = final_video.set_audio(mc)
+                    render_ok = ffmpeg_random_mix_videos(
+                        input_files=downloaded_files,
+                        output_path=batch_output,
+                        music_path=music_path,
+                        segment_duration=segment_duration,
+                        normalize_size=(1080, 1920),
+                        live_log=live_log
+                    )
+                else:
+                    # Chế độ ghép nối tiếp nguyên bản
+                    render_ok = ffmpeg_concat_videos(
+                        input_files=downloaded_files,
+                        output_path=batch_output,
+                        mirror_flags=mirror_flags,
+                        normalize_size=(1080, 1920),
+                        keep_audio=keep_audio,
+                        music_path=music_path,
+                        live_log=live_log
+                    )
                 
-                live_log.add(f"✅ Ghép xong! {len(clips)} clip • {total_dur:.1f}s")
+                if not render_ok or not os.path.exists(batch_output):
+                    live_log.add(f"❌ Batch {batch_num}: Render thất bại, bỏ qua.", force=True)
+                    error_logs.append(f"❌ Batch {batch_num}: FFmpeg render thất bại.")
+                    continue
                 
-                # ========== BƯỚC 3: RENDER ==========
-                pct = batch_pct_base + int(batch_pct_range * 0.7)
+                pct = batch_pct_base + int(batch_pct_range * 0.85)
                 progress_bar.progress(min(99, pct))
-                live_log.add(f"🎞️ [3/3] Render → {os.path.basename(batch_output)}")
-                
-                status_area.markdown(f"""
-                <div class="status-box">
-                    <b>📦 Batch {batch_num}/{total_batches} — 🎞️ Đang render video...</b>
-                </div>
-                """, unsafe_allow_html=True)
-                
-                logger = StreamlitLogger(
-                    progress_bar=progress_bar,
-                    status_area=status_area,
-                    status_prefix=f"Batch {batch_num}/{total_batches} — Render ({total_dur:.1f}s)",
-                    live_log=live_log
-                )
-                
-                # Override progress mapping for batch
-                def make_batch_logger(base_pct, pct_range):
-                    class BatchLogger(ProgressBarLogger):
-                        def __init__(self):
-                            super().__init__()
-                            self.last_pct = -1
-                        def bars_callback(self, bar, attr, value, old_value=None):
-                            if bar != 't':
-                                return
-                            total = self.bars[bar]['total']
-                            if total:
-                                percent = min(1.0, max(0.0, value / total))
-                                pct_int = int(percent * 100)
-                                if pct_int != self.last_pct:
-                                    self.last_pct = pct_int
-                                    st_pct = base_pct + int(pct_range * 0.3 * percent)
-                                    progress_bar.progress(min(99, st_pct))
-                                    status_area.markdown(f"""
-                                    <div class="status-box">
-                                        <b>📦 Batch {batch_num}/{total_batches} — 🎞️ Render ({pct_int}%)</b>
-                                    </div>
-                                    """, unsafe_allow_html=True)
-                                    if pct_int % 10 == 0:
-                                        live_log.add(f"🎞️ Render: {pct_int}%")
-                    return BatchLogger()
-                
-                batch_logger = make_batch_logger(
-                    batch_pct_base + int(batch_pct_range * 0.7),
-                    batch_pct_range
-                )
-                
-                final_video.write_videofile(
-                    batch_output,
-                    fps=24,
-                    codec="libx264",
-                    audio_codec="aac",
-                    threads=2,
-                    preset='ultrafast',
-                    logger=batch_logger
-                )
-                
-                # Giải phóng bộ nhớ ngay
-                final_video.close()
-                for c in video_clips_opened:
-                    try:
-                        c.close()
-                    except:
-                        pass
-                del clips, video_clips_opened, final_video
                 gc.collect()
                 
                 # ========== PHỐI LẠI ÂM THANH (nếu bật) ==========
@@ -922,7 +1109,7 @@ if start_btn:
                                     pass
                         gc.collect()
                 
-                # Lưu kết quả
+                total_dur = ffmpeg_get_duration(batch_output)
                 file_size_mb = os.path.getsize(batch_output) / (1024 * 1024)
                 completed_videos.append({
                     'path': batch_output,
@@ -931,19 +1118,22 @@ if start_btn:
                     'duration': total_dur,
                     'size_mb': file_size_mb,
                 })
-                live_log.add(f"🎉 Batch {batch_num} HOÀN THÀNH! {file_size_mb:.1f} MB")
+                live_log.add(f"🎉 Batch {batch_num} HOÀN THÀNH! {file_size_mb:.1f} MB", force=True)
                 
-                # Dọn file tải về để giải phóng disk
+                # Dọn dẹp toàn bộ file tải về của batch này ngay sau khi hoàn thành kết xuất để giải phóng đĩa
                 for f in glob.glob(os.path.join(DOWNLOAD_DIR, "*")):
                     try:
-                        os.remove(f)
+                        if os.path.isdir(f):
+                            shutil.rmtree(f)
+                        else:
+                            os.remove(f)
                     except:
                         pass
                 gc.collect()
                 
             except Exception as e:
                 error_logs.append(f"❌ Batch {batch_num} lỗi: {str(e)}")
-                live_log.add(f"💥 LỖI BATCH {batch_num}: {str(e)}")
+                live_log.add(f"💥 LỖI BATCH {batch_num}: {str(e)}", force=True)
                 # Giải phóng RAM nếu bị lỗi
                 gc.collect()
                 continue

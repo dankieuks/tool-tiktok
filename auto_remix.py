@@ -3,6 +3,13 @@ import sys
 import random
 import glob
 import re
+import shutil
+import PIL.Image
+
+# Sửa lỗi: module 'PIL.Image' has no attribute 'ANTIALIAS' trong Pillow 10+
+if not hasattr(PIL.Image, 'ANTIALIAS'):
+    PIL.Image.ANTIALIAS = PIL.Image.LANCZOS
+
 from yt_dlp import YoutubeDL
 from moviepy.editor import VideoFileClip, concatenate_videoclips, AudioFileClip
 from moviepy.audio.fx.all import audio_loop
@@ -28,6 +35,20 @@ NUM_CHANNEL_VIDEOS = 10         # Số lượng video mới nhất cần tải t
 def setup_directories():
     """Tạo các thư mục cần thiết."""
     os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+    check_disk_space(required_mb=500)
+
+def check_disk_space(required_mb=500):
+    """Kiểm tra dung lượng đĩa trống, cảnh báo hoặc tự động dọn dẹp nếu dưới mức yêu cầu."""
+    total, used, free = shutil.disk_usage(".")
+    free_mb = free / (1024 * 1024)
+    if free_mb < required_mb:
+        print(f"[!] Canh bao: Dung luong dia thap ({free_mb:.1f} MB < {required_mb} MB).")
+        print("[*] Dang tu dong don dep cac video cu trong thu muc tai ve...")
+        for f in glob.glob(os.path.join(DOWNLOAD_DIR, "*")):
+            try:
+                os.remove(f)
+            except:
+                pass
 
 def download_tiktok_videos(urls_file):
     """Tải video TikTok từ danh sách URL trong urls_file sử dụng yt-dlp."""
@@ -68,6 +89,7 @@ def download_tiktok_videos(urls_file):
 
     with YoutubeDL(ydl_opts) as ydl:
         for idx, url in enumerate(urls, 1):
+            check_disk_space(required_mb=500)
             try:
                 if "@" in url and "/video/" not in url:
                     print(f"\n[*] Dang tai {NUM_CHANNEL_VIDEOS} video moi nhat tu kenh {idx}/{len(urls)}: {url}")
@@ -104,8 +126,8 @@ def mix_videos_sequential(video_paths, music_path, output_path, keep_audio):
     for path in video_paths:
         try:
             clip = VideoFileClip(path)
-            # Lật hình ngang chống quét bản quyền
-            clip_modified = clip.fl_image(lambda frame: frame[:, ::-1])
+            # Lật hình ngang chống quét bản quyền (sử dụng .copy() tránh lỗi numpy view)
+            clip_modified = clip.fl_image(lambda frame: frame[:, ::-1].copy())
             
             # Xử lý âm thanh
             if not keep_audio:
@@ -212,9 +234,9 @@ def mix_videos_random_segments(video_paths, music_path, output_path, segment_dur
             sub_clip = video.subclip(start_time, end_time)
             sub_clip = sub_clip.without_audio()
             
-            # Lật ngang hình ảnh ngẫu nhiên 50%
+            # Lật ngang hình ảnh ngẫu nhiên 50% (sử dụng .copy() tránh lỗi numpy view)
             if random.choice([True, False]):
-                sub_clip = sub_clip.fl_image(lambda frame: frame[:, ::-1])
+                sub_clip = sub_clip.fl_image(lambda frame: frame[:, ::-1].copy())
             
             clips.append(sub_clip)
             current_duration += segment_duration
