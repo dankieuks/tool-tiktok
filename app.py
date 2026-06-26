@@ -52,14 +52,13 @@ class LiveLog:
 # ==========================================
 # RENDER VIDEO BẰNG FFMPEG THUẦN (TIẾT KIỆM RAM)
 # ==========================================
-def ffmpeg_concat_videos(input_files, output_path, mirror_flags, normalize_size=(1080, 1920), 
+def ffmpeg_concat_videos(input_files, output_path, normalize_size=(1080, 1920), 
                          keep_audio=True, music_path=None, live_log=None):
     """Ghép video bằng ffmpeg thuần - không load frame vào RAM Python.
     
     Args:
         input_files: Danh sách đường dẫn file video đầu vào.
         output_path: Đường dẫn file video đầu ra.
-        mirror_flags: Dict {index: True/False} cho biết file nào cần lật gương.
         normalize_size: Tuple (width, height) chuẩn hóa.
         keep_audio: Giữ âm thanh gốc hay không.
         music_path: Đường dẫn file nhạc nền (nếu không giữ audio gốc).
@@ -74,12 +73,7 @@ def ffmpeg_concat_videos(input_files, output_path, mirror_flags, normalize_size=
     for i, fpath in enumerate(input_files):
         # Scale + pad để fit đúng kích thước, giữ tỷ lệ
         scale_filter = f"scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:black,setsar=1"
-        
-        if mirror_flags.get(i, False):
-            # Lật gương + chuẩn hóa kích thước
-            filter_parts.append(f"[{i}:v]{scale_filter},hflip[v{i}]")
-        else:
-            filter_parts.append(f"[{i}:v]{scale_filter}[v{i}]")
+        filter_parts.append(f"[{i}:v]{scale_filter}[v{i}]")
         
         if keep_audio:
             concat_inputs.append(f"[v{i}][{i}:a]")
@@ -138,7 +132,7 @@ def ffmpeg_concat_videos(input_files, output_path, mirror_flags, normalize_size=
                 if live_log:
                     live_log.add("⚠️ Audio không đồng nhất, thử render lại không audio...")
                 return ffmpeg_concat_videos(
-                    input_files, output_path, mirror_flags, normalize_size,
+                    input_files, output_path, normalize_size,
                     keep_audio=False, music_path=None, live_log=live_log
                 )
             if live_log:
@@ -208,14 +202,11 @@ def ffmpeg_random_mix_videos(input_files, output_path, music_path, segment_durat
             src_file = random.choice(usable_files)
             src_dur = video_durations[src_file]
             start_t = random.uniform(0, src_dur - segment_duration)
-            mirror = random.choice([True, False])
             
             # Cắt segment bằng ffmpeg
             seg_path = os.path.join(os.path.dirname(output_path), f"_seg_{seg_idx}.mp4")
             
             vf_filter = f"scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:black,setsar=1"
-            if mirror:
-                vf_filter += ",hflip"
             
             cut_cmd = [
                 "ffmpeg", "-y",
@@ -786,7 +777,7 @@ with col_left:
     <div class="card">
         <h3>⚡ Tính năng tích hợp</h3>
         <div class="feature-grid">
-            <div class="feature-item"><div class="icon">🪞</div>Lật hình ngẫu nhiên (Mirror)</div>
+            <div class="feature-item"><div class="icon">🚀</div>Tối ưu hóa FFmpeg siêu nhẹ</div>
             <div class="feature-item"><div class="icon">🔇</div>Tách/Giữ âm thanh gốc</div>
             <div class="feature-item"><div class="icon">🔀</div>Trộn thứ tự ngẫu nhiên</div>
             <div class="feature-item"><div class="icon">🔁</div>Tự động loop nhạc nền</div>
@@ -967,13 +958,10 @@ if start_btn:
                 </div>
                 """, unsafe_allow_html=True)
                 
-                # Gán mirror flags ngẫu nhiên cho từng video
-                mirror_flags = {}
+                # Thu thập thông tin video
                 for idx_p, path in enumerate(downloaded_files):
-                    mirror = random.choice([True, False])
-                    mirror_flags[idx_p] = mirror
                     dur = ffmpeg_get_duration(path)
-                    live_log.add(f"  📂 {os.path.basename(path)} ({dur:.1f}s){' 🪞' if mirror else ''}")
+                    live_log.add(f"  📂 {os.path.basename(path)} ({dur:.1f}s)")
                 
                 # Kiểm tra dung lượng trước khi render
                 check_and_cleanup_disk_space(required_mb=500, live_log=live_log, current_batch_num=batch_num)
@@ -999,7 +987,6 @@ if start_btn:
                     render_ok = ffmpeg_concat_videos(
                         input_files=downloaded_files,
                         output_path=batch_output,
-                        mirror_flags=mirror_flags,
                         normalize_size=(1080, 1920),
                         keep_audio=keep_audio,
                         music_path=music_path,

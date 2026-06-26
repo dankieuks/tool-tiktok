@@ -126,12 +126,12 @@ def mix_videos_sequential(video_paths, music_path, output_path, keep_audio):
     for path in video_paths:
         try:
             clip = VideoFileClip(path)
-            # Lật hình ngang chống quét bản quyền (sử dụng .copy() tránh lỗi numpy view)
-            clip_modified = clip.fl_image(lambda frame: frame[:, ::-1].copy())
             
             # Xử lý âm thanh
             if not keep_audio:
-                clip_modified = clip_modified.without_audio()
+                clip_modified = clip.without_audio()
+            else:
+                clip_modified = clip
                 
             clips.append(clip_modified)
             video_clips_opened.append(clip)
@@ -233,10 +233,6 @@ def mix_videos_random_segments(video_paths, music_path, output_path, segment_dur
             
             sub_clip = video.subclip(start_time, end_time)
             sub_clip = sub_clip.without_audio()
-            
-            # Lật ngang hình ảnh ngẫu nhiên 50% (sử dụng .copy() tránh lỗi numpy view)
-            if random.choice([True, False]):
-                sub_clip = sub_clip.fl_image(lambda frame: frame[:, ::-1].copy())
             
             clips.append(sub_clip)
             current_duration += segment_duration
