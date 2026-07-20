@@ -433,7 +433,7 @@ patch_streamlit_pwa()
 # ==========================================
 # Cấu hình thư mục tạm nội bộ chạy tool
 DOWNLOAD_DIR = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp_dl"))
-OUTPUT_DIR = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp_out"))
+OUTPUT_DIR = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "static"))
 OUTPUT_FILE = os.path.join(OUTPUT_DIR, "final_music_video.mp4")
 
 def check_and_cleanup_disk_space(required_mb=500, live_log=None, current_batch_num=None):
@@ -1296,14 +1296,13 @@ if st.session_state.get('completed_videos'):
             """, unsafe_allow_html=True)
             
             st.video(merged_info['path'])
-            st.download_button(
-                label=f"📥 TẢI VIDEO ĐÃ NỐI TẤT CẢ ({merged_info['size_mb']:.1f} MB)",
-                data=open(merged_info['path'], 'rb'),
-                file_name="tiktok_merged_all.mp4",
-                mime="video/mp4",
-                use_container_width=True,
-                key="dl_merged_all_persistent"
-            )
+            
+            rel_merged = os.path.basename(merged_info['path'])
+            st.markdown(f"""
+            <a href="app/static/{rel_merged}" download="tiktok_merged_all.mp4" target="_blank" style="display: block; width: 100%; text-align: center; background: linear-gradient(135deg, #FF007F 0%, #7928CA 100%); color: #ffffff; padding: 14px 20px; border-radius: 10px; font-weight: 700; text-decoration: none; font-size: 1rem; box-shadow: 0 4px 15px rgba(255,0,127,0.3); margin-bottom: 15px;">
+                📥 TẢI VIDEO ĐÃ NỐI TẤT CẢ ({merged_info['size_mb']:.1f} MB)
+            </a>
+            """, unsafe_allow_html=True)
             st.markdown("---")
         elif len(comp_vids) >= 2:
             # Nếu chưa auto-merge, cho phép bấm nút để nối thủ công
@@ -1344,14 +1343,12 @@ if st.session_state.get('completed_videos'):
             """, unsafe_allow_html=True)
             
             st.video(vid['path'])
-            st.download_button(
-                label=f"📥 TẢI BATCH {vid['batch_num']} ({vid['size_mb']:.1f} MB)",
-                data=open(vid['path'], 'rb'),
-                file_name=f"tiktok_batch_{vid['batch_num']}.mp4",
-                mime="video/mp4",
-                use_container_width=True,
-                key=f"dl_batch_{vid['batch_num']}"
-            )
+            rel_batch = os.path.basename(vid['path'])
+            st.markdown(f"""
+            <a href="app/static/{rel_batch}" download="tiktok_batch_{vid['batch_num']}.mp4" target="_blank" style="display: block; width: 100%; text-align: center; background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%); border: 1px solid #FF007F; color: #ffffff; padding: 12px 16px; border-radius: 8px; font-weight: 600; text-decoration: none; font-size: 0.9rem; margin-top: 6px; margin-bottom: 15px;">
+                📥 TẢI BATCH {vid['batch_num']} ({vid['size_mb']:.1f} MB)
+            </a>
+            """, unsafe_allow_html=True)
             st.markdown("---")
 
 
