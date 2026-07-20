@@ -160,6 +160,100 @@ def ffmpeg_get_duration(filepath):
     except:
         return 0.0
 
+def ffmpeg_merge_batches(batch_paths, output_path, live_log=None):
+    """Nối nhiều video batch thành 1 video dài bằng ffmpeg concat demuxer.
+    
+    Sử dụng concat demuxer (không re-encode) vì tất cả batch đã cùng codec/resolution/fps.
+    Nếu concat demuxer thất bại (do codec không đồng nhất), fallback sang re-encode.
+    
+    Args:
+        batch_paths: Danh sách đường dẫn file video batch.
+        output_path: Đường dẫn file video đầu ra.
+        live_log: LiveLog instance để ghi log.
+    Returns:
+        True nếu thành công, False nếu thất bại.
+    """
+    if not batch_paths or len(batch_paths) < 2:
+        return False
+    
+    if live_log:
+        live_log.add(f"🔗 Đang nối {len(batch_paths)} video batch thành 1 video dài...")
+    
+    # Tạo file danh sách concat
+    concat_list_path = os.path.join(os.path.dirname(output_path), "_merge_list.txt")
+    try:
+        with open(concat_list_path, "w", encoding="utf-8") as f:
+            for p in batch_paths:
+                # Escape single quotes trong path cho ffmpeg concat format
+                safe_path = p.replace("'", "'\\''")
+                f.write(f"file '{safe_path}'\n")
+        
+        # Thử concat demuxer (copy stream, không re-encode → rất nhanh)
+        cmd = [
+            "ffmpeg", "-y",
+            "-f", "concat", "-safe", "0",
+            "-i", concat_list_path,
+            "-c", "copy",
+            "-movflags", "+faststart",
+            output_path
+        ]
+        
+        if live_log:
+            live_log.add("⚡ Ghép nhanh (copy stream, không re-encode)...")
+        
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=1200)
+        
+        if result.returncode == 0 and os.path.exists(output_path):
+            if live_log:
+                dur = ffmpeg_get_duration(output_path)
+                size_mb = os.path.getsize(output_path) / (1024 * 1024)
+                live_log.add(f"✅ Nối thành công! {dur:.1f}s • {size_mb:.1f} MB", force=True)
+            return True
+        
+        # Fallback: re-encode nếu concat demuxer thất bại
+        if live_log:
+            live_log.add("⚠️ Copy stream thất bại, đang re-encode...")
+        
+        cmd_reencode = [
+            "ffmpeg", "-y",
+            "-f", "concat", "-safe", "0",
+            "-i", concat_list_path,
+            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
+            "-c:a", "aac", "-b:a", "128k",
+            "-threads", "2",
+            "-movflags", "+faststart",
+            "-r", "24",
+            output_path
+        ]
+        
+        result2 = subprocess.run(cmd_reencode, capture_output=True, text=True, timeout=1800)
+        
+        if result2.returncode == 0 and os.path.exists(output_path):
+            if live_log:
+                dur = ffmpeg_get_duration(output_path)
+                size_mb = os.path.getsize(output_path) / (1024 * 1024)
+                live_log.add(f"✅ Nối thành công (re-encode)! {dur:.1f}s • {size_mb:.1f} MB", force=True)
+            return True
+        
+        if live_log:
+            live_log.add(f"❌ Nối video thất bại: {result2.stderr[-200:]}", force=True)
+        return False
+        
+    except subprocess.TimeoutExpired:
+        if live_log:
+            live_log.add("⚠️ Nối video quá lâu (timeout), bỏ qua.", force=True)
+        return False
+    except Exception as e:
+        if live_log:
+            live_log.add(f"⚠️ Lỗi nối video: {str(e)[:100]}", force=True)
+        return False
+    finally:
+        # Dọn file tạm
+        try:
+            os.remove(concat_list_path)
+        except:
+            pass
+
 def ffmpeg_random_mix_videos(input_files, output_path, music_path, segment_duration=3.0,
                               normalize_size=(1080, 1920), live_log=None):
     """Trộn ngẫu nhiên các đoạn video ngắn khớp với nhạc nền bằng ffmpeg thuần.
@@ -1134,10 +1228,17 @@ if start_btn:
             live_log.add(f"🏁 HOÀN THÀNH TẤT CẢ: {len(completed_videos)}/{total_batches} batch thành công!")
             live_log.add(f"{'='*40}")
             
+            # Lưu danh sách video vào session_state để dùng cho merge
+            st.session_state['completed_videos'] = completed_videos
+            
+            total_dur_all = sum(v['duration'] for v in completed_videos)
+            total_size_all = sum(v['size_mb'] for v in completed_videos)
+            
             status_area.markdown(f"""
             <div class="status-box" style="border-left-color: #00c853;">
                 <b>🎉 Hoàn thành! {len(completed_videos)}/{total_batches} batch thành công.</b><br>
                 📊 Tổng cộng <b>{len(completed_videos)}</b> video đã sẵn sàng tải về.
+                {f'<br>⏱️ Tổng thời lượng: <b>{total_dur_all:.1f}s</b> • 💾 Tổng dung lượng: <b>{total_size_all:.1f} MB</b>' if len(completed_videos) > 1 else ''}
             </div>
             """, unsafe_allow_html=True)
             
@@ -1160,6 +1261,53 @@ if start_btn:
                         key=f"dl_batch_{vid['batch_num']}"
                     )
                     st.markdown("---")
+                
+                # ========== NÚT NỐI TẤT CẢ BATCH ==========
+                if len(completed_videos) >= 2:
+                    st.markdown("""
+                    <div class="card" style="margin-bottom: 10px; border-left: 3px solid #ff6b35;">
+                        <h4>🔗 Nối tất cả batch thành 1 video dài</h4>
+                        <p style="color: #94a3b8; font-size: 0.9rem;">
+                            Ghép tất cả video batch ở trên thành 1 video duy nhất theo thứ tự.
+                            Sử dụng copy stream (không re-encode) nên rất nhanh.
+                        </p>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    merge_btn = st.button(
+                        f"🔗 NỐI {len(completed_videos)} BATCH THÀNH 1 VIDEO DÀI ({total_dur_all:.0f}s)",
+                        use_container_width=True,
+                        key="merge_all_batches"
+                    )
+                    
+                    if merge_btn:
+                        merge_output = os.path.join(OUTPUT_DIR, "merged_all_batches.mp4")
+                        batch_paths = [v['path'] for v in completed_videos]
+                        
+                        with st.spinner("🔗 Đang nối tất cả batch..."):
+                            merge_ok = ffmpeg_merge_batches(batch_paths, merge_output, live_log=live_log)
+                        
+                        if merge_ok and os.path.exists(merge_output):
+                            merged_dur = ffmpeg_get_duration(merge_output)
+                            merged_size = os.path.getsize(merge_output) / (1024 * 1024)
+                            
+                            st.markdown(f"""
+                            <div class="card" style="margin-bottom: 10px; border-left: 3px solid #00c853;">
+                                <h4>✅ Video đã nối — {merged_dur:.1f}s • {merged_size:.1f} MB</h4>
+                            </div>
+                            """, unsafe_allow_html=True)
+                            
+                            st.video(merge_output)
+                            st.download_button(
+                                label=f"📥 TẢI VIDEO ĐÃ NỐI ({merged_size:.1f} MB)",
+                                data=open(merge_output, 'rb'),
+                                file_name="tiktok_merged_all.mp4",
+                                mime="video/mp4",
+                                use_container_width=True,
+                                key="dl_merged_all"
+                            )
+                        else:
+                            st.error("❌ Nối video thất bại. Xem log bên dưới để biết chi tiết.")
         else:
             status_area.error("❌ Không có batch nào hoàn thành thành công.")
             progress_bar.progress(0)

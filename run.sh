@@ -1,4 +1,4 @@
-#!/bin/bash
+>#!/bin/bash
 
 echo "================================================="
 echo "       TIKTOK VIDEO MIXER - KHỞI CHẠY TOOL       "
