@@ -773,6 +773,12 @@ with col_left:
         index=0
     )
 
+    auto_merge_batches = st.toggle(
+        "🔗 Tự động nối tất cả batch thành 1 video dài",
+        value=True,
+        help="Sau khi chạy xong tất cả các batch (ví dụ 3 batch = 3 video), hệ thống sẽ tự động ghép 3 video đó thành 1 video dài duy nhất."
+    )
+
     keep_audio = st.toggle("🔊 Giữ âm thanh gốc của video TikTok", value=True)
 
     music_file = None
@@ -922,6 +928,10 @@ if start_btn:
     elif not keep_audio and music_file is None and mix_mode == "🎲 Trộn ngẫu nhiên theo nhạc":
         status_area.error("⚠️ Bạn chọn chế độ trộn theo nhạc nhưng chưa tải lên file nhạc nền.")
     else:
+        # Reset kết quả cũ trong session_state khi bắt đầu chạy mới
+        st.session_state.pop('completed_videos', None)
+        st.session_state.pop('merged_video_info', None)
+        
         # Chia batch
         batches = [valid_urls[i:i+BATCH_SIZE] for i in range(0, len(valid_urls), BATCH_SIZE)]
         total_batches = len(batches)
@@ -1219,7 +1229,7 @@ if start_btn:
                 gc.collect()
                 continue
         
-        # ========== HIỂN THỊ TẤT CẢ KẾT QUẢ ==========
+        # ========== HOÀN THÀNH CÁC BATCH ==========
         progress_bar.progress(100)
         
         if completed_videos:
@@ -1228,86 +1238,24 @@ if start_btn:
             live_log.add(f"🏁 HOÀN THÀNH TẤT CẢ: {len(completed_videos)}/{total_batches} batch thành công!")
             live_log.add(f"{'='*40}")
             
-            # Lưu danh sách video vào session_state để dùng cho merge
+            # Lưu danh sách video vào session_state
             st.session_state['completed_videos'] = completed_videos
             
-            total_dur_all = sum(v['duration'] for v in completed_videos)
-            total_size_all = sum(v['size_mb'] for v in completed_videos)
-            
-            status_area.markdown(f"""
-            <div class="status-box" style="border-left-color: #00c853;">
-                <b>🎉 Hoàn thành! {len(completed_videos)}/{total_batches} batch thành công.</b><br>
-                📊 Tổng cộng <b>{len(completed_videos)}</b> video đã sẵn sàng tải về.
-                {f'<br>⏱️ Tổng thời lượng: <b>{total_dur_all:.1f}s</b> • 💾 Tổng dung lượng: <b>{total_size_all:.1f} MB</b>' if len(completed_videos) > 1 else ''}
-            </div>
-            """, unsafe_allow_html=True)
-            
-            # Hiển thị danh sách video
-            with video_preview.container():
-                for vid in completed_videos:
-                    st.markdown(f"""
-                    <div class="card" style="margin-bottom: 10px;">
-                        <h4>📦 Batch {vid['batch_num']} — {vid['clip_count']} clip • {vid['duration']:.1f}s • {vid['size_mb']:.1f} MB</h4>
-                    </div>
-                    """, unsafe_allow_html=True)
-                    
-                    st.video(vid['path'])
-                    st.download_button(
-                        label=f"📥 TẢI BATCH {vid['batch_num']} ({vid['size_mb']:.1f} MB)",
-                        data=open(vid['path'], 'rb'),
-                        file_name=f"tiktok_batch_{vid['batch_num']}.mp4",
-                        mime="video/mp4",
-                        use_container_width=True,
-                        key=f"dl_batch_{vid['batch_num']}"
-                    )
-                    st.markdown("---")
-                
-                # ========== NÚT NỐI TẤT CẢ BATCH ==========
-                if len(completed_videos) >= 2:
-                    st.markdown("""
-                    <div class="card" style="margin-bottom: 10px; border-left: 3px solid #ff6b35;">
-                        <h4>🔗 Nối tất cả batch thành 1 video dài</h4>
-                        <p style="color: #94a3b8; font-size: 0.9rem;">
-                            Ghép tất cả video batch ở trên thành 1 video duy nhất theo thứ tự.
-                            Sử dụng copy stream (không re-encode) nên rất nhanh.
-                        </p>
-                    </div>
-                    """, unsafe_allow_html=True)
-                    
-                    merge_btn = st.button(
-                        f"🔗 NỐI {len(completed_videos)} BATCH THÀNH 1 VIDEO DÀI ({total_dur_all:.0f}s)",
-                        use_container_width=True,
-                        key="merge_all_batches"
-                    )
-                    
-                    if merge_btn:
-                        merge_output = os.path.join(OUTPUT_DIR, "merged_all_batches.mp4")
-                        batch_paths = [v['path'] for v in completed_videos]
-                        
-                        with st.spinner("🔗 Đang nối tất cả batch..."):
-                            merge_ok = ffmpeg_merge_batches(batch_paths, merge_output, live_log=live_log)
-                        
-                        if merge_ok and os.path.exists(merge_output):
-                            merged_dur = ffmpeg_get_duration(merge_output)
-                            merged_size = os.path.getsize(merge_output) / (1024 * 1024)
-                            
-                            st.markdown(f"""
-                            <div class="card" style="margin-bottom: 10px; border-left: 3px solid #00c853;">
-                                <h4>✅ Video đã nối — {merged_dur:.1f}s • {merged_size:.1f} MB</h4>
-                            </div>
-                            """, unsafe_allow_html=True)
-                            
-                            st.video(merge_output)
-                            st.download_button(
-                                label=f"📥 TẢI VIDEO ĐÃ NỐI ({merged_size:.1f} MB)",
-                                data=open(merge_output, 'rb'),
-                                file_name="tiktok_merged_all.mp4",
-                                mime="video/mp4",
-                                use_container_width=True,
-                                key="dl_merged_all"
-                            )
-                        else:
-                            st.error("❌ Nối video thất bại. Xem log bên dưới để biết chi tiết.")
+            # TỰ ĐỘNG NỐI TẤT CẢ BATCH NẾU BẬT OPTION
+            if auto_merge_batches and len(completed_videos) >= 2:
+                live_log.add("🔗 Đang tự động nối tất cả batch thành 1 video dài...")
+                merge_output = os.path.join(OUTPUT_DIR, "merged_all_batches.mp4")
+                batch_paths = [v['path'] for v in completed_videos]
+                merge_ok = ffmpeg_merge_batches(batch_paths, merge_output, live_log=live_log)
+                if merge_ok and os.path.exists(merge_output):
+                    merged_dur = ffmpeg_get_duration(merge_output)
+                    merged_size = os.path.getsize(merge_output) / (1024 * 1024)
+                    st.session_state['merged_video_info'] = {
+                        'path': merge_output,
+                        'duration': merged_dur,
+                        'size_mb': merged_size,
+                        'batch_count': len(completed_videos)
+                    }
         else:
             status_area.error("❌ Không có batch nào hoàn thành thành công.")
             progress_bar.progress(0)
@@ -1317,4 +1265,93 @@ if start_btn:
                 st.markdown("---")
                 st.markdown("### ⚠️ Nhật ký lỗi (Logs)")
                 st.code("\n".join(error_logs), language="text")
+
+# ==========================================
+# HIỂN THỊ KẾT QUẢ VĨNH VIỄN (SESSION STATE)
+# ==========================================
+if st.session_state.get('completed_videos'):
+    comp_vids = st.session_state['completed_videos']
+    merged_info = st.session_state.get('merged_video_info')
+    
+    total_dur_all = sum(v['duration'] for v in comp_vids)
+    total_size_all = sum(v['size_mb'] for v in comp_vids)
+    
+    status_area.markdown(f"""
+    <div class="status-box" style="border-left-color: #00c853;">
+        <b>🎉 Hoàn thành! {len(comp_vids)} batch xử lý thành công.</b><br>
+        📊 Tổng thời lượng các batch: <b>{total_dur_all:.1f}s</b> • 💾 Tổng dung lượng: <b>{total_size_all:.1f} MB</b>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    with video_preview.container():
+        # 1. HIỂN THỊ VIDEO ĐÃ NỐI TẤT CẢ BATCH (NẾU CÓ)
+        if merged_info and os.path.exists(merged_info['path']):
+            st.markdown(f"""
+            <div class="card" style="margin-bottom: 15px; border-left: 4px solid #00c853; background: #0f172a;">
+                <h3 style="margin-top: 0; color: #00c853;">🎬 VIDEO ĐÃ NỐI TẤT CẢ BATCH ({merged_info['batch_count']} BATCH)</h3>
+                <p style="color: #94a3b8; font-size: 0.9rem; margin-bottom: 10px;">
+                    ⏱️ Thời lượng: <b>{merged_info['duration']:.1f}s</b> • 💾 Dung lượng: <b>{merged_info['size_mb']:.1f} MB</b>
+                </p>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            st.video(merged_info['path'])
+            st.download_button(
+                label=f"📥 TẢI VIDEO ĐÃ NỐI TẤT CẢ ({merged_info['size_mb']:.1f} MB)",
+                data=open(merged_info['path'], 'rb'),
+                file_name="tiktok_merged_all.mp4",
+                mime="video/mp4",
+                use_container_width=True,
+                key="dl_merged_all_persistent"
+            )
+            st.markdown("---")
+        elif len(comp_vids) >= 2:
+            # Nếu chưa auto-merge, cho phép bấm nút để nối thủ công
+            st.markdown("""
+            <div class="card" style="margin-bottom: 15px; border-left: 3px solid #ff6b35;">
+                <h4>🔗 Nối tất cả batch thành 1 video dài</h4>
+                <p style="color: #94a3b8; font-size: 0.9rem;">
+                    Ghép tất cả các batch ở trên thành 1 video duy nhất theo thứ tự.
+                </p>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            if st.button(f"🔗 NỐI {len(comp_vids)} BATCH THÀNH 1 VIDEO DÀI ({total_dur_all:.0f}s)", use_container_width=True, key="manual_merge_btn"):
+                merge_output = os.path.join(OUTPUT_DIR, "merged_all_batches.mp4")
+                batch_paths = [v['path'] for v in comp_vids]
+                with st.spinner("🔗 Đang nối tất cả batch..."):
+                    merge_ok = ffmpeg_merge_batches(batch_paths, merge_output)
+                if merge_ok and os.path.exists(merge_output):
+                    merged_dur = ffmpeg_get_duration(merge_output)
+                    merged_size = os.path.getsize(merge_output) / (1024 * 1024)
+                    st.session_state['merged_video_info'] = {
+                        'path': merge_output,
+                        'duration': merged_dur,
+                        'size_mb': merged_size,
+                        'batch_count': len(comp_vids)
+                    }
+                    st.rerun()
+                else:
+                    st.error("❌ Nối video thất bại.")
+
+        # 2. HIỂN THỊ DANH SÁCH TỪNG BATCH RIÊNG LẺ
+        st.markdown("### 📦 Danh sách video từng Batch riêng lẻ")
+        for vid in comp_vids:
+            st.markdown(f"""
+            <div class="card" style="margin-bottom: 10px;">
+                <h4>📦 Batch {vid['batch_num']} — {vid['clip_count']} clip • {vid['duration']:.1f}s • {vid['size_mb']:.1f} MB</h4>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            st.video(vid['path'])
+            st.download_button(
+                label=f"📥 TẢI BATCH {vid['batch_num']} ({vid['size_mb']:.1f} MB)",
+                data=open(vid['path'], 'rb'),
+                file_name=f"tiktok_batch_{vid['batch_num']}.mp4",
+                mime="video/mp4",
+                use_container_width=True,
+                key=f"dl_batch_{vid['batch_num']}"
+            )
+            st.markdown("---")
+
 
