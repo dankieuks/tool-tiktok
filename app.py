@@ -339,8 +339,6 @@ def fetch_single_tiktok_info(url):
     match = re.search(r'(https?://[^\s]+)', clean_url)
     if match:
         clean_url = match.group(1)
-        if "?" in clean_url:
-            clean_url = clean_url.split("?")[0]
             
     if not clean_url:
         return None, "Vui lòng nhập đường dẫn (URL) TikTok hợp lệ."
@@ -353,6 +351,59 @@ def fetch_single_tiktok_info(url):
     mp4_path = os.path.join(OUTPUT_DIR, mp4_filename)
     mp3_path = os.path.join(OUTPUT_DIR, mp3_filename)
 
+    # 🚀 ENGINE 1: TRÍCH XUẤT SIÊU TỐC QUA TIKWM API (Hỗ trợ 100% mọi link ?is_from_webapp=1, vt.tiktok.com...)
+    try:
+        import requests
+        api_resp = requests.post("https://www.tikwm.com/api/", data={"url": clean_url, "hd": 1}, timeout=12)
+        if api_resp.status_code == 200:
+            res_json = api_resp.json()
+            if res_json.get("code") == 0:
+                data = res_json.get("data", {})
+                video_url = data.get("hdplay") or data.get("play")
+                music_url = data.get("music")
+                title = data.get("title") or "TikTok Video"
+                author_info = data.get("author") or {}
+                uploader = author_info.get("nickname") or author_info.get("unique_id") or "TikTok User"
+                duration = data.get("duration") or 0
+
+                if video_url:
+                    # Tải MP4 không logo trực tiếp từ CDN
+                    v_res = requests.get(video_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=30)
+                    if v_res.status_code == 200:
+                        with open(mp4_path, "wb") as f:
+                            f.write(v_res.content)
+                        
+                        # Tải MP3 trực tiếp
+                        if music_url:
+                            m_res = requests.get(music_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=20)
+                            if m_res.status_code == 200:
+                                with open(mp3_path, "wb") as f:
+                                    f.write(m_res.content)
+                        
+                        if not os.path.exists(mp3_path) and os.path.exists(mp4_path):
+                            cmd = ["ffmpeg", "-y", "-i", mp4_path, "-vn", "-c:a", "libmp3lame", "-q:a", "2", mp3_path]
+                            subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+
+                        size_mb = os.path.getsize(mp4_path) / (1024 * 1024)
+                        mp3_size_mb = os.path.getsize(mp3_path) / (1024 * 1024) if os.path.exists(mp3_path) else 0.0
+
+                        return {
+                            'title': title,
+                            'uploader': uploader,
+                            'thumbnail': data.get("cover") or "",
+                            'mp4_filename': mp4_filename,
+                            'mp3_filename': mp3_filename,
+                            'mp4_path': mp4_path,
+                            'mp3_path': mp3_path,
+                            'duration': duration,
+                            'size_mb': size_mb,
+                            'mp3_size_mb': mp3_size_mb
+                        }, None
+    except Exception as e_api:
+        print(f"TikWM API fallback to yt-dlp: {e_api}")
+
+    # 🚀 ENGINE 2: FALLBACK DỰ PHÒNG SỬ DỤNG YT-DLP
+    raw_url = clean_url.split("?")[0] if "?" in clean_url else clean_url
     ydl_opts = {
         'outtmpl': mp4_path,
         'format': 'best[ext=mp4]/best',
@@ -366,19 +417,14 @@ def fetch_single_tiktok_info(url):
 
     try:
         with YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(clean_url, download=True)
+            info = ydl.extract_info(raw_url, download=True)
             title = info.get('title') or info.get('description') or 'TikTok Video'
             uploader = info.get('uploader') or info.get('uploader_id') or info.get('channel') or 'TikTok User'
             thumbnail = info.get('thumbnail') or ''
             duration = info.get('duration') or ffmpeg_get_duration(mp4_path)
 
         if os.path.exists(mp4_path):
-            # Tách âm thanh MP3 từ tệp MP4
-            cmd = [
-                "ffmpeg", "-y", "-i", mp4_path,
-                "-vn", "-c:a", "libmp3lame", "-q:a", "2",
-                mp3_path
-            ]
+            cmd = ["ffmpeg", "-y", "-i", mp4_path, "-vn", "-c:a", "libmp3lame", "-q:a", "2", mp3_path]
             subprocess.run(cmd, capture_output=True, text=True, timeout=60)
             
             size_mb = os.path.getsize(mp4_path) / (1024 * 1024)
@@ -444,22 +490,22 @@ def patch_streamlit_seo_and_pwa():
             seo_head_tags = """
   <!-- Full SEO Meta Tags -->
   <title>Tải Video Nhanh - Tải Video TikTok Không Logo Mờ Miễn Phí (Watermark Remover)</title>
-  <meta name="description" content="Tải Video Nhanh giúp bạn tải video TikTok không dán nhãn logo (watermark) miễn phí 100%, tốc độ cực nhanh, hỗ trợ tải video MP4 Full HD và tách nhạc MP3 âm thanh gốc mượt mà trên iPhone, Android, PC.">
-  <meta name="keywords" content="tải video nhanh, tai video nhanh, tải video tiktok, tiktok downloader, tải tiktok không logo, tải nhạc tiktok mp3, tiktok watermark remover, tải video tiktok hd">
+  <meta name="description" content="Tải Video Nhanh giúp bạn tải video TikTok không dán nhãn logo (watermark) miễn phí 100%, tốc độ cực nhanh, hỗ trợ tải video MP4 FullHD và tách nhạc MP3 âm thanh gốc mượt mà trên iPhone, Android, PC.">
+  <meta name="keywords" content="tải video nhanh, tai video nhanh, tải video tiktok, tiktok downloader, tải tiktok không logo, tải nhạc tiktok mp3, tiktok watermark remover, tải video tiktok fullhd">
   <meta name="robots" content="index, follow">
   <meta name="author" content="Tải Video Nhanh">
   
   <!-- Open Graph / Facebook -->
   <meta property="og:type" content="website">
-  <meta property="og:title" content="Tải Video Nhanh - Tải Video TikTok Không Logo Mờ Miễn Phí HD">
-  <meta property="og:description" content="Công cụ Tải Video Nhanh trích xuất video TikTok không dán nhãn logo mờ miễn phí 100%, tốc độ cực nhanh, tải MP4 HD & nhạc MP3 mượt mà trên mọi thiết bị.">
+  <meta property="og:title" content="Tải Video Nhanh - Tải Video TikTok Không Logo Mờ Miễn Phí FullHD">
+  <meta property="og:description" content="Công cụ Tải Video Nhanh trích xuất video TikTok không dán nhãn logo mờ miễn phí 100%, tốc độ cực nhanh, tải MP4 FullHD & nhạc MP3 mượt mà trên mọi thiết bị.">
   <meta property="og:image" content="app_icon.png">
   <meta property="og:site_name" content="Tải Video Nhanh">
   <meta property="og:locale" content="vi_VN">
 
   <!-- Twitter Card -->
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="Tải Video Nhanh - Tải Video TikTok Không Logo Mờ Miễn Phí HD">
+  <meta name="twitter:title" content="Tải Video Nhanh - Tải Video TikTok Không Logo Mờ Miễn Phí FullHD">
   <meta name="twitter:description" content="Công cụ Tải Video Nhanh trích xuất video TikTok không dán nhãn logo mờ miễn phí 100%, tốc độ cực nhanh.">
   <meta name="twitter:image" content="app_icon.png">
 
@@ -478,7 +524,7 @@ def patch_streamlit_seo_and_pwa():
     "url": "/",
     "applicationCategory": "MultimediaApplication",
     "operatingSystem": "All",
-    "description": "Tải Video Nhanh - Công cụ tải video TikTok không dán nhãn logo mờ (watermark) miễn phí 100%, tốc độ cao, tải MP4 HD và MP3 âm thanh gốc.",
+    "description": "Tải Video Nhanh - Công cụ tải video TikTok không dán nhãn logo mờ (watermark) miễn phí 100%, tốc độ cao, tải MP4 FullHD và MP3 âm thanh gốc.",
     "offers": {
       "@type": "Offer",
       "price": "0",
@@ -546,7 +592,7 @@ def init_temp_dirs():
     """Khởi tạo và làm sạch các thư mục tạm lúc khởi chạy."""
     os.makedirs(DOWNLOAD_DIR, exist_ok=True)
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-    check_and_cleanup_disk_space(required_mb=999999)
+    check_and_cleanup_disk_space(required_mb=500)
 
 init_temp_dirs()
 
@@ -634,7 +680,7 @@ body, .stApp {
     }
 }
 
-/* 2. Màn Hình Tablet (768px - 1023px): Mở rộng 95% width */
+/* 2. Màn Hình Tablet (768px - 1023px): Thu nhỏ nhẹ kích thước cho cân đối */
 @media screen and (min-width: 768px) and (max-width: 1023px) {
     .landing-page-wrap {
         width: 95% !important;
@@ -642,10 +688,48 @@ body, .stApp {
         margin-left: auto !important;
         margin-right: auto !important;
     }
+    
+    #hero-header {
+        padding: 20px 16px 14px 16px !important;
+        margin-bottom: 16px !important;
+        border-radius: 18px !important;
+    }
+    
+    #hero-header h1 {
+        font-size: 1.85rem !important;
+        margin-bottom: 4px !important;
+    }
+    
+    #hero-header p {
+        font-size: 0.88rem !important;
+        margin-bottom: 8px !important;
+    }
+    
+    .trust-badge {
+        font-size: 0.76rem !important;
+        padding: 4px 10px !important;
+    }
+    
+    .stTextInput input {
+        font-size: 0.98rem !important;
+        padding: 12px 14px !important;
+    }
+    
+    .stButton>button {
+        padding: 12px 20px !important;
+        font-size: 0.98rem !important;
+    }
 }
 
-/* 3. Màn Hình Mobile Điện Thoại (< 768px): Mở rộng 100% width viền gọn gàng */
+/* 3. Màn Hình Mobile Điện Thoại (< 768px): Thu nhỏ kích thước gọn gàng, sát trên */
 @media screen and (max-width: 767px) {
+    .stApp [data-testid="stMainBlockContainer"],
+    .stApp .main .block-container,
+    .block-container {
+        padding-top: 0.1rem !important;
+        padding-bottom: 1rem !important;
+    }
+
     .landing-page-wrap {
         width: 100% !important;
         max-width: 100% !important;
@@ -655,25 +739,63 @@ body, .stApp {
     }
     
     #top-navbar {
-        flex-direction: column !important;
-        gap: 12px !important;
-        text-align: center !important;
-        padding: 12px 16px !important;
+        flex-direction: row !important;
+        justify-content: space-between !important;
+        align-items: center !important;
+        gap: 6px !important;
+        text-align: left !important;
+        padding: 8px 12px !important;
+        margin-bottom: 8px !important;
     }
     
     #top-navbar div:last-child {
-        flex-wrap: wrap !important;
-        justify-content: center !important;
-        gap: 10px !important;
-        font-size: 0.82rem !important;
+        display: none !important; /* Ẩn menu điều hướng dài trên mobile để tiết kiệm diện tích */
+    }
+    
+    #hero-header {
+        padding: 10px 10px 8px 10px !important;
+        margin-bottom: 10px !important;
+        border-radius: 14px !important;
     }
     
     #hero-header h1 {
-        font-size: 1.9rem !important;
+        font-size: 1.3rem !important;
+        margin-bottom: 2px !important;
     }
     
     #hero-header p {
-        font-size: 0.98rem !important;
+        font-size: 0.78rem !important;
+        margin-bottom: 6px !important;
+        line-height: 1.35 !important;
+    }
+    
+    .trust-badge-group {
+        gap: 3px !important;
+    }
+
+    .trust-badge {
+        font-size: 0.65rem !important;
+        padding: 2px 6px !important;
+    }
+
+    div[data-testid="stTextInput"] {
+        margin-top: 0 !important;
+    }
+    
+    div[data-testid="stTextInput"] label p {
+        font-size: 0.85rem !important;
+    }
+
+    .stTextInput input {
+        font-size: 0.88rem !important;
+        padding: 9px 12px !important;
+        border-radius: 10px !important;
+    }
+
+    .stButton>button {
+        padding: 10px 16px !important;
+        font-size: 0.9rem !important;
+        border-radius: 10px !important;
     }
 }
 
@@ -802,15 +924,18 @@ def render_public_landing_page():
     # Top Navbar điều hướng sáng sủa chuẩn Landing Page
     st.markdown("""
     <nav id="top-navbar" style="display: flex; justify-content: space-between; align-items: center; padding: 14px 24px; background: rgba(255, 255, 255, 0.9); backdrop-filter: blur(16px); border: 1.5px solid #E2E8F0; border-radius: 16px; margin-bottom: 25px; box-shadow: 0 4px 20px rgba(0,0,0,0.04);">
-        <div style="display: flex; align-items: center; gap: 10px;">
-            <span style="font-size: 1.6rem;">⚡</span>
-            <span style="font-size: 1.4rem; font-weight: 800; background: linear-gradient(135deg, #EC4899 0%, #8B5CF6 50%, #0EA5E9 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">Tải Video Nhanh</span>
+        <div style="display: flex; flex-direction: column;">
+            <div style="display: flex; align-items: center; gap: 8px;">
+                <span style="font-size: 1.6rem;">⚡</span>
+                <span style="font-size: 1.4rem; font-weight: 800; background: linear-gradient(135deg, #EC4899 0%, #8B5CF6 50%, #0EA5E9 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">Tải Video Nhanh</span>
+            </div>
+            <div style="font-size: 0.8rem; font-weight: 700; color: #64748B; margin-left: 36px; margin-top: -2px;">
+                Công cụ thuộc <a href="https://www.aihocviec.com" target="_blank" rel="noopener noreferrer" style="color: #EC4899; text-decoration: underline; font-weight: 800;">Aihocviec.com</a>
+            </div>
         </div>
         <div style="display: flex; align-items: center; gap: 20px; font-size: 0.9rem; font-weight: 700;">
             <a href="#main-content" style="color: #0F172A; text-decoration: none;">🏠 Trang Chủ</a>
             <a href="#features-section" style="color: #64748B; text-decoration: none;">⚡ Tính Năng</a>
-            <a href="#comparison-section" style="color: #64748B; text-decoration: none;">🔥 So Sánh</a>
-            <a href="#guide-section" style="color: #64748B; text-decoration: none;">📖 Hướng Dẫn</a>
             <a href="#faq-section" style="color: #64748B; text-decoration: none;">❓ FAQ</a>
         </div>
     </nav>
@@ -819,11 +944,14 @@ def render_public_landing_page():
     # Banner Tiêu Đề Hero Sáng Sủa Trung Tâm
     st.markdown("""
     <header id="hero-header" style="text-align: center; padding: 35px 20px 25px 20px; background: linear-gradient(135deg, #FFF0F6 0%, #F0F9FF 50%, #F5F3FF 100%); border-radius: 24px; border: 1.5px solid #F1F5F9; box-shadow: 0 10px 30px rgba(236, 72, 153, 0.06); margin-bottom: 25px;">
-        <h1 style="font-size: 2.7rem; font-weight: 800; background: linear-gradient(135deg, #EC4899 0%, #8B5CF6 50%, #0EA5E9 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 10px;">
+        <h1 style="font-size: 2.7rem; font-weight: 800; background: linear-gradient(135deg, #EC4899 0%, #8B5CF6 50%, #0EA5E9 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 6px;">
             ⚡ Tải Video TikTok Không Logo
         </h1>
-        <p style="color: #475569; font-size: 1.15rem; font-weight: 600; margin-bottom: 16px;">
-            Dán đường dẫn (link) video TikTok vào bên dưới để tải MP4 HD sạch watermark & tách nhạc MP3 miễn phí 100%
+        <p style="color: #64748B; font-size: 0.95rem; font-weight: 700; margin-bottom: 12px;">
+            <b>Tải Video Nhanh</b> là công cụ miễn phí thuộc hệ sinh thái <a href="https://www.aihocviec.com" target="_blank" rel="noopener noreferrer" style="color: #EC4899; text-decoration: underline; font-weight: 800;">www.aihocviec.com</a>
+        </p>
+        <p style="color: #475569; font-size: 1.1rem; font-weight: 600; margin-bottom: 16px;">
+            Dán đường dẫn (link) video TikTok vào bên dưới để tải MP4 Full HD sạch watermark & tách nhạc MP3 miễn phí 100%
         </p>
         <div class="trust-badge-group">
             <span class="trust-badge">🔥 10M+ Video Đã Tải</span>
@@ -835,11 +963,6 @@ def render_public_landing_page():
     """, unsafe_allow_html=True)
 
     # Khung Dán Link 1 Ô Duy Nhất Trung Tâm
-    st.markdown("""
-    <main id="main-content">
-        <section id="download-tool-section" class="card pulse-glow" style="padding: 28px; border: 2px solid #F472B6; background: #FFFFFF;">
-    """, unsafe_allow_html=True)
-    
     single_url_input = st.text_input(
         "🔗 Dán đường dẫn (link) video TikTok vào đây:",
         placeholder="https://www.tiktok.com/@username/video/1234567890123456789",
@@ -847,7 +970,6 @@ def render_public_landing_page():
     )
     
     btn_dl = st.button("🚀 TẢI VIDEO NGAY", use_container_width=True, key="btn_single_download")
-    st.markdown('</section>', unsafe_allow_html=True)
 
     if btn_dl:
         if not single_url_input.strip():
